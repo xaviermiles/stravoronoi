@@ -12,7 +12,9 @@
 
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
+
+use crate::map;
 
 const CLIENT_ID: &str = env!("STRAVA_CLIENT_ID");
 const CLIENT_SECRET: &str = env!("STRAVA_CLIENT_SECRET");
@@ -22,7 +24,8 @@ const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
 /// Number of most-recent activities to request.
-const PER_PAGE: u32 = 120;
+// TODO: this is so low because the map matching API takes a while. Could it stream the individual runs? Or cache the results?
+const PER_PAGE: u32 = 5;
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
 
@@ -70,26 +73,45 @@ async fn refresh_access_token() -> Result<String, String> {
     Ok(token.access_token)
 }
 
-/// Fetch the most recent activities for the authenticated athlete.
-async fn fetch_activities(access_token: &str) -> Result<Vec<SummaryActivity>, String> {
-    let url = format!("{ACTIVITIES_URL}?per_page={PER_PAGE}&page=1");
-
-    let resp = Request::get(&url)
+/// Generic fetch helper.
+async fn fetch_json<T: DeserializeOwned>(
+    url: &str,
+    access_token: &str,
+    error_name: &str,
+) -> Result<Vec<T>, String> {
+    let resp = Request::get(url)
         .header("Authorization", &format!("Bearer {access_token}"))
         .send()
         .await
-        .map_err(|e| format!("Activities request failed: {e}"))?;
+        .map_err(|e| format!("{error_name} request failed: {e}"))?;
 
     if !resp.ok() {
         return Err(format!(
-            "Activities request returned HTTP {}",
+            "{error_name} request returned HTTP {}",
             resp.status()
         ));
     }
 
     resp.json()
         .await
-        .map_err(|e| format!("Failed to parse activities: {e}"))
+        .map_err(|e| format!("Failed to parse {error_name}: {e}"))
+}
+
+/// Fetch the most recent activities for the authenticated athlete.
+async fn fetch_activities(access_token: &str) -> Result<Vec<SummaryActivity>, String> {
+    let url = format!("{ACTIVITIES_URL}?per_page={PER_PAGE}&page=1");
+    fetch_json(&url, access_token, "Activities").await
+}
+
+/// Fetch the segment efforts for a given activity.
+// TODO: was here for voronoi but might be unnecessary if the map matching works and is quick enough.
+#[allow(dead_code)]
+async fn fetch_segment_efforts(
+    access_token: &str,
+    activity_id: u64,
+) -> Result<Vec<SummaryActivity>, String> {
+    let url = format!("https://www.strava.com/api/v3/activities/{activity_id}/segment_efforts");
+    fetch_json(&url, access_token, "Segment efforts").await
 }
 
 /// Decode a Strava encoded polyline into GeoJSON positions (`[lng, lat]`).
@@ -109,28 +131,40 @@ pub async fn load_run_lines() -> Result<GeoJson, String> {
     let access_token = refresh_access_token().await?;
     let activities = fetch_activities(&access_token).await?;
 
-    let features: Vec<Feature> = activities
-        .into_iter()
-        .filter(|a| a.sport_type.contains("Run"))
-        .filter_map(|a| {
-            let encoded = a.map.summary_polyline?;
-            let coords = decode_line(&encoded);
-            if coords.len() < 2 {
-                return None;
-            }
+    let mut features = Vec::new();
+    for activity in activities.into_iter() {
+        if !(activity.sport_type.contains("Run")) {
+            continue;
+        }
+        let encoded_coords = match activity.map.summary_polyline {
+            Some(p) => p,
+            None => continue,
+        };
 
-            let mut properties = serde_json::Map::new();
-            properties.insert("name".to_string(), serde_json::Value::String(a.name));
+        let raw_coords = decode_line(&encoded_coords);
+        if raw_coords.len() < 2 {
+            // Not a line with less than 2 points.
+            continue;
+        }
+        // TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
+        //       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
+        let snapped_coords = map::map_match(&raw_coords).await;
+        if snapped_coords.len() < 2 {
+            // Not a line with less than 2 points.
+            continue;
+        }
 
-            Some(Feature {
-                bbox: None,
-                geometry: Some(Geometry::new(Value::LineString(coords))),
-                id: None,
-                properties: Some(properties),
-                foreign_members: None,
-            })
+        let mut properties = serde_json::Map::new();
+        properties.insert("name".to_string(), serde_json::Value::String(activity.name));
+
+        features.push(Feature {
+            bbox: None,
+            geometry: Some(Geometry::new(Value::LineString(snapped_coords))),
+            id: None,
+            properties: Some(properties),
+            foreign_members: None,
         })
-        .collect();
+    }
 
     Ok(GeoJson::FeatureCollection(FeatureCollection {
         bbox: None,
