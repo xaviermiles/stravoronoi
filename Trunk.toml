@@ -1,2 +1,5 @@
+[build]
+target = "frontend/index.html"
+
 [watch]
-watch = ["src", "index.html"]
+watch = ["frontend/src", "frontend/index.html"]
