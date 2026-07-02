@@ -1,0 +1,20 @@
+[package]
+name = "stravoronoi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+yew = { version = "0.20", features = ["csr"] }
+mapboxgl = { version = "0.7.0" }
+gloo-net = { version = "0.7.0", features = ["http", "json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+geojson = "0.24"
+polyline = "0.11.0"
+wasm-bindgen-futures = "0.4.76"
+futures = "0.3.32"
+log = "0.4.33"
+wasm-logger = "0.2.0"
+
+[build-dependencies]
+dotenvy = "0.15.7"
