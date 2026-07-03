@@ -6,16 +6,16 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
-use sea_orm::DatabaseConnection;
+use sea_orm::ActiveModelTrait;
+use sea_orm::{ActiveValue::Set, DatabaseConnection};
 use serde::Deserialize;
 
-pub mod models;
+mod models;
 mod strava;
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
 struct AppState {
-    #[allow(dead_code)]
     database: DatabaseConnection,
     // TODO: reqwest::Client, Strava OAuth config (client id / secret / redirect
     // uri), and a session signing key.
@@ -50,7 +50,7 @@ struct AuthCallback {
 /// `code` for tokens, upsert them keyed by athlete id, set a session cookie,
 /// then redirect back to the app.
 async fn auth_callback(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<AuthCallback>,
 ) -> Response {
@@ -61,10 +61,19 @@ async fn auth_callback(
     }
 
     match strava::exchange_code(&params.code).await {
-        Ok(_tokens) => {
+        Ok(tokens) => {
+            let user = models::athlete::ActiveModel {
+                strava_athlete_id: Set(0), // TODO: populate this correctly
+                access_token: Set(tokens.access_token.to_owned()),
+                refresh_token: Set(tokens.refresh_token.to_owned()),
+                expires_at: Set(tokens.expires_at.to_owned()),
+            };
             // TODO: upsert `_tokens` keyed by athlete id, create a session, and
             // set a session cookie before redirecting.
-            Redirect::to("http://localhost:8080/").into_response()
+            match user.insert(&state.database).await {
+                Ok(_) => Redirect::to("http://localhost:8080/").into_response(),
+                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            }
         }
         Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
     }
@@ -87,6 +96,7 @@ async fn auth_logout(State(_state): State<AppState>) -> Response {
 /// Return the signed-in athlete's runs as GeoJSON. Resolve the caller from the
 /// session cookie, refresh their access token if expired, fetch their
 /// activities, then decode and return them.
+#[allow(dead_code)]
 async fn list_runs(State(_state): State<AppState>) -> Response {
     todo!()
 }
@@ -103,8 +113,6 @@ async fn main() {
         // .route("/api/runs", get(list_runs))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

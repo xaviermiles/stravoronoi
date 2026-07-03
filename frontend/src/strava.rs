@@ -1,7 +1,7 @@
 //! Minimal Strava API client for the browser (WASM).
 //!
 //! Asks the backend for a short-lived Strava access token, then fetches the athlete's most recent
-//! runs and returns them as a GeoJSON `FeatureCollection` of `LineString`s ready to hand to 
+//! runs and returns them as a GeoJSON `FeatureCollection` of `LineString`s ready to hand to
 //! Mapbox.
 
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
@@ -10,9 +10,11 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::map;
 
-/// Backend endpoint that returns a fresh Strava access token. The backend owns
-/// the client secret + refresh token and performs the exchange server-side.
+/// Backend endpoint that returns a fresh Strava access token.
 const BACKEND_TOKEN_URL: &str = "http://localhost:3000/api/token";
+/// Backend endpoint to login with oauth.
+pub const BACKEND_LOGIN_URL: &str = "http://localhost:3000/auth/login";
+
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
 /// Number of most-recent activities to request.

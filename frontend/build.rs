@@ -9,9 +9,7 @@ fn main() {
     // Best-effort: if there's no .env, we still emit empty values so `env!` compiles.
     let _ = dotenvy::dotenv();
 
-    for key in [
-        "MAPBOX_TOKEN",
-    ] {
+    for key in ["MAPBOX_TOKEN"] {
         let value = std::env::var(key).unwrap_or_default();
         println!("cargo:rustc-env={key}={value}");
     }

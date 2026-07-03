@@ -16,7 +16,7 @@ use oauth2::{
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
-const DEFAULT_REDIRECT_URI: &str = "http://localhost:3000/auth/callback";
+const REDIRECT_URL: &str = "http://localhost:3000/auth/callback";
 
 /// A Strava OAuth client with the authorize + token endpoints configured.
 type StravaClient =
@@ -34,13 +34,12 @@ pub struct StravaTokens {
 fn oauth_client() -> StravaClient {
     let client_id = std::env::var("STRAVA_CLIENT_ID").unwrap();
     let client_secret = std::env::var("STRAVA_CLIENT_SECRET").unwrap();
-    let redirect = std::env::var("STRAVA_REDIRECT_URI").unwrap_or_else(|_| DEFAULT_REDIRECT_URI.to_string());
 
     BasicClient::new(ClientId::new(client_id))
         .set_client_secret(ClientSecret::new(client_secret))
         .set_auth_uri(AuthUrl::new(AUTHORIZE_URL.to_string()).expect("valid authorize url"))
         .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).expect("valid token url"))
-        .set_redirect_uri(RedirectUrl::new(redirect).expect("valid redirect url"))
+        .set_redirect_uri(RedirectUrl::new(REDIRECT_URL.to_string()).expect("valid redirect url"))
         // Strava wants the client credentials in the request body.
         .set_auth_type(AuthType::RequestBody)
 }
@@ -74,6 +73,7 @@ pub async fn exchange_code(code: &str) -> Result<StravaTokens, String> {
 }
 
 /// Refresh one user's expired access token using their stored refresh token.
+#[allow(dead_code)]
 pub async fn refresh_access_token(refresh_token: &str) -> Result<StravaTokens, String> {
     let token = oauth_client()
         .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
