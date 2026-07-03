@@ -10,7 +10,9 @@ fn main() {
     let _ = dotenvy::dotenv();
 
     for key in [
-        "MAPBOX_TOKEN",
+        "STRAVA_CLIENT_ID",
+        "STRAVA_CLIENT_SECRET",
+        "STRAVA_REFRESH_TOKEN",
     ] {
         let value = std::env::var(key).unwrap_or_default();
         println!("cargo:rustc-env={key}={value}");

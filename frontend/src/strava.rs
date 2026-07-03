@@ -1,14 +1,8 @@
 //! Minimal Strava API client for the browser (WASM).
 //!
-//! Uses a pre-configured refresh token (baked in at build time via `build.rs`)
-//! to obtain a short-lived access token, then fetches the athlete's most recent
-//! runs and returns them as a GeoJSON `FeatureCollection` of `LineString`s ready
-//! to hand to Mapbox.
-//!
-//! NOTE: the client secret and refresh token are embedded in the WASM binary.
-//! This is acceptable for local development only. For a real deployment, move
-//! the token exchange behind a backend proxy so the secret is never shipped to
-//! the browser.
+//! Asks the backend for a short-lived Strava access token, then fetches the athlete's most recent
+//! runs and returns them as a GeoJSON `FeatureCollection` of `LineString`s ready to hand to 
+//! Mapbox.
 
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
@@ -16,11 +10,9 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use crate::map;
 
-const CLIENT_ID: &str = env!("STRAVA_CLIENT_ID");
-const CLIENT_SECRET: &str = env!("STRAVA_CLIENT_SECRET");
-const REFRESH_TOKEN: &str = env!("STRAVA_REFRESH_TOKEN");
-
-const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
+/// Backend endpoint that returns a fresh Strava access token. The backend owns
+/// the client secret + refresh token and performs the exchange server-side.
+const BACKEND_TOKEN_URL: &str = "http://localhost:3000/api/token";
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
 /// Number of most-recent activities to request.
@@ -47,30 +39,6 @@ struct SummaryActivity {
     #[serde(default)]
     sport_type: String,
     map: PolylineMap,
-}
-
-/// Exchange the stored refresh token for a fresh short-lived access token.
-async fn refresh_access_token() -> Result<String, String> {
-    let url = format!(
-        "{TOKEN_URL}?client_id={CLIENT_ID}&client_secret={CLIENT_SECRET}\
-         &grant_type=refresh_token&refresh_token={REFRESH_TOKEN}"
-    );
-
-    let resp = Request::post(&url)
-        .send()
-        .await
-        .map_err(|e| format!("Token request failed: {e}"))?;
-
-    if !resp.ok() {
-        return Err(format!("Token request returned HTTP {}", resp.status()));
-    }
-
-    let token: TokenResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse token response: {e}"))?;
-
-    Ok(token.access_token)
 }
 
 /// Generic fetch helper.
@@ -125,10 +93,28 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
     }
 }
 
-/// Refresh the token, fetch recent runs, and return them as a GeoJSON
-/// `FeatureCollection` of `LineString`s.
+/// Ask the backend for a fresh Strava access token.
+async fn get_access_token() -> Result<String, String> {
+    let resp = Request::get(BACKEND_TOKEN_URL)
+        .send()
+        .await
+        .map_err(|e| format!("Token request failed: {e}"))?;
+
+    if !resp.ok() {
+        return Err(format!("Token request returned HTTP {}", resp.status()));
+    }
+
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse token response: {e}"))?;
+
+    Ok(token.access_token)
+}
+
+/// Fetch recent runs and return them as a GeoJSON `FeatureCollection` of `LineString`s.
 pub async fn load_run_lines() -> Result<GeoJson, String> {
-    let access_token = refresh_access_token().await?;
+    let access_token = get_access_token().await?;
     let activities = fetch_activities(&access_token).await?;
 
     let mut features = Vec::new();

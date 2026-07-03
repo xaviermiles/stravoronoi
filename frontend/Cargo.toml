@@ -15,6 +15,7 @@ wasm-bindgen-futures = "0.4.76"
 futures = "0.3.32"
 log = "0.4.33"
 wasm-logger = "0.2.0"
+web-sys = "0.3.103"
 
 [build-dependencies]
 dotenvy = "0.15.7"
