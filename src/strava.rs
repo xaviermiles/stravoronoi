@@ -79,7 +79,7 @@ async fn fetch_json<T: DeserializeOwned>(
     access_token: &str,
     error_name: &str,
 ) -> Result<Vec<T>, String> {
-    let resp = Request::get(url)
+    let resp = Request::get(&url)
         .header("Authorization", &format!("Bearer {access_token}"))
         .send()
         .await
