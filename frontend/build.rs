@@ -6,7 +6,9 @@ fn main() {
     println!("cargo:rerun-if-changed=.env");
 
     // This .env file doesn't exist when running in github workflow.
-    let _ = dotenvy::dotenv();
+    if std::env::var("GITHUB_ACTIONS").is_err() {
+        dotenvy::dotenv().unwrap();
+    }
 
     let key = "MAPBOX_TOKEN";
     let value = std::env::var(key).unwrap();
