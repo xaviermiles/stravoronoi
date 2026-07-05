@@ -13,7 +13,7 @@ sea-orm = { version = "2.0.0-rc", features = [ "macros", "sqlx-sqlite", "with-js
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52.3", features = ["full"] }
-tower-http = "0.7.0"
+tower-http = { version = "0.7.0", features = ["cors"] }
 
 [build-dependencies]
 dotenvy = "0.15.7"
