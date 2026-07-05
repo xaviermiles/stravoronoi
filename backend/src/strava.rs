@@ -6,6 +6,7 @@
 //! Note: Strava does not support PKCE, and it expects the client credentials in
 //! the request body (not as an HTTP Basic auth header).
 
+use crate::{BACKEND_BASE_URL, FRONTEND_URL};
 use oauth2::basic::{BasicClient, BasicTokenResponse};
 use oauth2::reqwest;
 use oauth2::url::Url;
@@ -16,7 +17,6 @@ use oauth2::{
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
-const REDIRECT_URL: &str = "http://localhost:3000/auth/callback";
 
 /// A Strava OAuth client with the authorize + token endpoints configured.
 type StravaClient =
@@ -39,7 +39,10 @@ fn oauth_client() -> StravaClient {
         .set_client_secret(ClientSecret::new(client_secret))
         .set_auth_uri(AuthUrl::new(AUTHORIZE_URL.to_string()).expect("valid authorize url"))
         .set_token_uri(TokenUrl::new(TOKEN_URL.to_string()).expect("valid token url"))
-        .set_redirect_uri(RedirectUrl::new(REDIRECT_URL.to_string()).expect("valid redirect url"))
+        .set_redirect_uri(
+            RedirectUrl::new(format!("{BACKEND_BASE_URL}/auth/callback"))
+                .expect("valid redirect url"),
+        )
         // Strava wants the client credentials in the request body.
         .set_auth_type(AuthType::RequestBody)
 }

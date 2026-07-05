@@ -20,6 +20,11 @@ const FRONTEND_URL: &str = if cfg!(debug_assertions) {
 } else {
     "https://xaviermiles.github.io/stravoronoi/"
 };
+pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
+    "http://localhost:3000"
+} else {
+    "https://stravoronoi-production.up.railway.app"
+};
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
