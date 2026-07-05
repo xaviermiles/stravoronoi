@@ -2,7 +2,7 @@ name: Build and deploy frontend
 
 on:
     push:
-        # branches: ["main"] TODO: uncomment
+        branches: ["main"]
     pull_request:
         branches: ["main"]
     workflow_dispatch:

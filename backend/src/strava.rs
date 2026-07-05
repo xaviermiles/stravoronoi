@@ -6,7 +6,7 @@
 //! Note: Strava does not support PKCE, and it expects the client credentials in
 //! the request body (not as an HTTP Basic auth header).
 
-use crate::{BACKEND_BASE_URL, FRONTEND_URL};
+use crate::BACKEND_BASE_URL;
 use oauth2::basic::{BasicClient, BasicTokenResponse};
 use oauth2::reqwest;
 use oauth2::url::Url;

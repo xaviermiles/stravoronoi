@@ -1,8 +1,10 @@
-name: Deploy to Railway
+name: Build and deploy backend
 
 on:
     push:
-        # branches: [main]  TODO: uncomment
+        branches: [main]
+    # TODO: this should build-but-not-deploy for pull_request
+    workflow_dispatch:
 
 jobs:
     deploy:
