@@ -10,9 +10,11 @@ use sea_orm::ActiveModelTrait;
 use sea_orm::{ActiveValue::Set, DatabaseConnection};
 use serde::Deserialize;
 use std::time::Duration;
+use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
 use tower_http::cors::CorsLayer;
 
 mod models;
+mod session;
 mod strava;
 
 const FRONTEND_URL: &str = if cfg!(debug_assertions) {
@@ -66,6 +68,7 @@ async fn auth_callback(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<AuthCallback>,
+    cookies: Cookies,
 ) -> Response {
     // Verify the CSRF `state` against the value we stored in the login cookie.
     match cookie_value(&headers, "oauth_state") {
@@ -73,16 +76,25 @@ async fn auth_callback(
         _ => return (StatusCode::BAD_REQUEST, "invalid OAuth state").into_response(),
     }
 
+    log::info!("{}", params.code);
+    log::info!("{}", params.state);
     match strava::exchange_code(&params.code).await {
         Ok(tokens) => {
+            // TODO: upsert `_tokens` keyed by athlete id, create a session, and
+            // set a session cookie before redirecting.
             let user = models::athlete::ActiveModel {
                 strava_athlete_id: Set(0), // TODO: populate this correctly
                 access_token: Set(tokens.access_token.to_owned()),
                 refresh_token: Set(tokens.refresh_token.to_owned()),
                 expires_at: Set(tokens.expires_at.to_owned()),
             };
-            // TODO: upsert `_tokens` keyed by athlete id, create a session, and
-            // set a session cookie before redirecting.
+            let mut cookie = Cookie::new("session_token", "blah blah blah");
+            cookie.set_path("/");
+            cookie.set_http_only(true);
+            cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
+            cookie.set_secure(true); // Enable in production over HTTPS
+
+            cookies.add(cookie);
             match user.insert(&state.database).await {
                 Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -134,7 +146,9 @@ async fn main() {
         .route("/auth/logout", get(auth_logout))
         // .route("/api/runs", get(list_runs))
         .with_state(state)
-        .layer(cors);
+        .layer(cors)
+        .layer(CookieManagerLayer::new())
+        .layer(session::get_session_layer());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
