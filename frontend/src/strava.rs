@@ -8,12 +8,8 @@ use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
 use serde::{Deserialize, de::DeserializeOwned};
 
+use crate::BACKEND_BASE_URL;
 use crate::map;
-
-/// Backend endpoint that returns a fresh Strava access token.
-const BACKEND_TOKEN_URL: &str = "http://localhost:3000/api/token";
-/// Backend endpoint to login with oauth.
-pub const BACKEND_LOGIN_URL: &str = "http://localhost:3000/auth/login";
 
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
@@ -97,7 +93,7 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 
 /// Ask the backend for a fresh Strava access token.
 async fn get_access_token() -> Result<String, String> {
-    let resp = Request::get(BACKEND_TOKEN_URL)
+    let resp = Request::get(&format!("{BACKEND_BASE_URL}/api/token"))
         .send()
         .await
         .map_err(|e| format!("Token request failed: {e}"))?;

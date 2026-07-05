@@ -1,0 +1,65 @@
+name: Build and deploy frontend
+
+on:
+    push:
+        branches: ["main"]
+    pull_request:
+        branches: ["main"]
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            - name: Restore cache
+              uses: actions/cache@v6
+              with:
+                  path: |
+                      ~/.cargo/bin
+                      ~/.cargo/git
+                      ~/.cargo/registry
+                      target
+                  key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+            # Install trunk using the action rather than `cargo install trunk` for speediness.
+            - name: Install Trunk
+              uses: jetli/trunk-action@v0.5.1
+              with:
+                  version: "latest"
+
+            - name: Add WASM build target
+              run: rustup target add wasm32-unknown-unknown
+
+            - name: Run trunk build
+              run: RUSTFLAGS='--cfg getrandom_backend="wasm_js"' trunk build --public-url "/stravoronoi" --release
+              env:
+                  MAPBOX_TOKEN: ${{ secrets.MAPBOX_FRONTEND_TOKEN }}
+
+            - name: Setup Pages
+              uses: actions/configure-pages@v6.0.0
+
+            - name: Upload artifact
+              uses: actions/upload-pages-artifact@v3
+              with:
+                  path: "./dist"
+
+    deploy:
+        needs: build
+        runs-on: ubuntu-latest
+        # Deploying only needs to happen after merging the pull request.
+        if: ${{ github.event_name != 'pull_request' }}
+
+        permissions:
+            pages: write
+            id-token: write
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+
+        steps:
+            - name: Deploy to GitHub Pages
+              id: deployment
+              uses: actions/deploy-pages@v5.0.0

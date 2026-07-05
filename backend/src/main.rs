@@ -2,16 +2,29 @@ use axum::{
     Router,
     body::Body,
     extract::{Query, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
     routing::get,
 };
 use sea_orm::ActiveModelTrait;
 use sea_orm::{ActiveValue::Set, DatabaseConnection};
 use serde::Deserialize;
+use std::time::Duration;
+use tower_http::cors::CorsLayer;
 
 mod models;
 mod strava;
+
+const FRONTEND_URL: &str = if cfg!(debug_assertions) {
+    "http://localhost:8080"
+} else {
+    "https://xaviermiles.github.io/stravoronoi/"
+};
+pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
+    "http://localhost:3000"
+} else {
+    "https://stravoronoi-production.up.railway.app"
+};
 
 /// Shared state handed to every request handler.
 #[derive(Clone)]
@@ -71,7 +84,7 @@ async fn auth_callback(
             // TODO: upsert `_tokens` keyed by athlete id, create a session, and
             // set a session cookie before redirecting.
             match user.insert(&state.database).await {
-                Ok(_) => Redirect::to("http://localhost:8080/").into_response(),
+                Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
         }
@@ -106,12 +119,20 @@ async fn main() {
     let database = models::connect_database().await;
     let state = AppState { database };
 
+    let cors = CorsLayer::new()
+        .allow_origin(FRONTEND_URL.parse::<HeaderValue>().unwrap())
+        .allow_methods([Method::GET])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+        .expose_headers([header::CONTENT_DISPOSITION])
+        .allow_credentials(true)
+        .max_age(Duration::from_secs(3600));
     let app = Router::new()
         .route("/auth/login", get(auth_login))
         .route("/auth/callback", get(auth_callback))
         .route("/auth/logout", get(auth_logout))
         // .route("/api/runs", get(list_runs))
-        .with_state(state);
+        .with_state(state)
+        .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();

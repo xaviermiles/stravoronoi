@@ -2,6 +2,13 @@ mod map;
 mod strava;
 use yew::prelude::*;
 
+/// The base URL of the backend to use.
+pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
+    "http://localhost:3000"
+} else {
+    "https://stravoronoi-production.up.railway.app"
+};
+
 #[function_component(App)]
 fn app() -> Html {
     let _map = map::use_map();
@@ -9,7 +16,7 @@ fn app() -> Html {
         web_sys::window()
             .unwrap()
             .location()
-            .set_href(strava::BACKEND_LOGIN_URL)
+            .set_href(&format!("{BACKEND_BASE_URL}/auth/login"))
             .unwrap();
     });
 
