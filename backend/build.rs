@@ -5,7 +5,10 @@
 fn main() {
     println!("cargo:rerun-if-changed=.env");
 
-    let _ = dotenvy::dotenv();
+    // This .env file doesn't exist when running in railway.
+    if std::env::var("RAILWAY_ENVIRONMENT").is_err() {
+        dotenvy::dotenv().unwrap();
+    }
 
     for key in ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"] {
         let value = std::env::var(key).unwrap();
