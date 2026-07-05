@@ -116,7 +116,9 @@ async fn list_runs(State(_state): State<AppState>) -> Response {
 
 #[tokio::main]
 async fn main() {
-    let database = models::connect_database().await;
+    let database = models::connect_database()
+        .await
+        .expect("need a database connection");
     let state = AppState { database };
 
     let cors = CorsLayer::new()

@@ -9,7 +9,8 @@ chrono = { version = "0.4", features = ["serde"] }
 gloo-net = "0.7.0"
 nanoid = "0.4"
 oauth2 = "5.0.0"
-sea-orm = { version = "2.0.0-rc", features = [ "macros", "sqlx-sqlite", "with-json", "runtime-tokio-rustls" ]}
+sea-orm = { version = "2.0.0-rc.41", default-features = false, features = [ 
+    "entity-registry", "macros", "runtime-tokio-native-tls", "schema-sync", "sqlx-sqlite", "with-json" ]}
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.52.3", features = ["full"] }
