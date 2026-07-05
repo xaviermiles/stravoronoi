@@ -50,7 +50,6 @@ fn add_run_layer(map: &Map, geojson: geojson::GeoJson) {
 }
 
 fn create_map() -> Rc<Map> {
-    log::info!("{MAPBOX_TOKEN}");
     // The default coordinates are Christchurch.
     let opts = MapOptions::new(MAPBOX_TOKEN.into(), "map".into())
         .center(LngLat::new(172.637491, -43.530950))

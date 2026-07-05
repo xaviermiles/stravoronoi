@@ -1,10 +1,9 @@
-name: Deploy frontend
+name: Build and deploy frontend
 
 on:
     push:
         # branches: ["main"] TODO: uncomment
     pull_request:
-        # TODO: don't run 'deploy' job
         branches: ["main"]
     workflow_dispatch:
 
@@ -25,6 +24,7 @@ jobs:
                       target
                   key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+            # Install trunk using the action rather than `cargo install trunk` for speediness.
             - name: Install Trunk
               uses: jetli/trunk-action@v0.5.1
               with:
@@ -49,6 +49,8 @@ jobs:
     deploy:
         needs: build
         runs-on: ubuntu-latest
+        # Deploying only needs to happen after merging the pull request.
+        if: ${{ github.event_name != 'pull_request' }}
 
         permissions:
             pages: write

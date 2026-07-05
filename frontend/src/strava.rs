@@ -97,6 +97,7 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 
 /// Ask the backend for a fresh Strava access token.
 async fn get_access_token() -> Result<String, String> {
+    // TODO: Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at http://localhost:3000/api/token. (Reason: CORS request did not succeed). Status code: (null).
     let resp = Request::get(BACKEND_TOKEN_URL)
         .send()
         .await
