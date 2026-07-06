@@ -1,8 +1,6 @@
 use axum::{
     Router,
-    extract::State,
     http::{HeaderValue, Method, header},
-    response::Response,
     routing::get,
 };
 use sea_orm::DatabaseConnection;
@@ -34,14 +32,6 @@ struct AppState {
     // uri), and a session signing key.
 }
 
-/// Return the signed-in athlete's runs as GeoJSON. Resolve the caller from the
-/// session cookie, refresh their access token if expired, fetch their
-/// activities, then decode and return them.
-#[allow(dead_code)]
-async fn list_runs(State(_state): State<AppState>) -> Response {
-    todo!()
-}
-
 #[tokio::main]
 async fn main() {
     let database = models::connect_database()
@@ -60,7 +50,7 @@ async fn main() {
         .route("/auth/login", get(routes::strava::auth_login))
         .route("/auth/callback", get(routes::strava::auth_callback))
         .route("/auth/logout", get(routes::strava::auth_logout))
-        // .route("/api/runs", get(list_runs))
+        .route("/api/runs", get(routes::runs::list_runs))
         .with_state(state)
         .layer(cors)
         .layer(CookieManagerLayer::new())
