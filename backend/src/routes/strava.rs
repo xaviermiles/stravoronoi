@@ -10,7 +10,6 @@ use axum::{
 use sea_orm::ActiveValue::Set;
 use serde::Deserialize;
 use sea_orm::EntityTrait;
-use tower_sessions::Session;
 
 /// Start the OAuth flow: generate a `state` value and redirect the user to
 /// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
@@ -42,7 +41,6 @@ pub struct AuthCallback {
 /// then redirect back to the app.
 pub async fn auth_callback(
     State(state): State<AppState>,
-    session: Session,
     headers: HeaderMap,
     Query(params): Query<AuthCallback>,
 ) -> Response {
@@ -54,20 +52,28 @@ pub async fn auth_callback(
 
     match services::strava::exchange_code(&params.code).await {
         Ok(tokens) => {
+            let athlete_id = tokens.athlete.id;
             let user = models::athlete::ActiveModel {
-                strava_id: Set(tokens.athlete.id),
+                strava_id: Set(athlete_id),
                 strava_username: Set(tokens.athlete.username),
                 access_token: Set(tokens.access_token.to_owned()),
                 refresh_token: Set(tokens.refresh_token.to_owned()),
                 expires_at: Set(tokens.expires_at.to_owned()),
             };
-            if let Err(err) = session.insert("athlete_id", tokens.athlete.id).await {
+            if let Err(err) = models::athlete::Entity::insert(user)
+                .on_conflict_do_nothing()
+                .exec(&state.database)
+                .await
+            {
                 return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
-            };
-            session.save().await.unwrap();
-            let callback_url = format!("{FRONTEND_URL}/callback?session_id={}", session.id().expect("save should have created an ID"));
-            match models::athlete::Entity::insert(user).on_conflict_do_nothing().exec(&state.database).await {
-                Ok(_) => Redirect::to(&callback_url).into_response(),
+            }
+            // Mint an opaque session and hand its id to the frontend, which
+            // stores it and sends it back as a bearer token.
+            match crate::session::create_session(&state.database, athlete_id).await {
+                Ok(session_id) => {
+                    let callback_url = format!("{FRONTEND_URL}/callback?session_id={session_id}");
+                    Redirect::to(&callback_url).into_response()
+                }
                 Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
             }
         }

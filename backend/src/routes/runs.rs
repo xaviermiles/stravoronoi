@@ -10,9 +10,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
-use tower_sessions::Session;
 use sea_orm::EntityTrait;
 
+use crate::session::AuthedAthlete;
 use crate::{AppState, services, models};
 
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
@@ -81,12 +81,8 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 }
 
 /// Fetch recent runs.
-pub async fn list_runs(State(state): State<AppState>, session: Session) -> Response {
-    let athlete_id: i64 = match session.get("athlete_id").await {
-        Ok(Some(athlete_id)) => athlete_id,
-        Ok(None) => return (StatusCode::UNAUTHORIZED, "No current athlete ID").into_response(),
-        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to find athlete ID: {}", err.to_string())).into_response(),
-    };
+pub async fn list_runs(State(state): State<AppState>, athlete: AuthedAthlete) -> Response {
+    let athlete_id = athlete.athlete_id;
     let access_token = match models::athlete::Entity::find_by_id(athlete_id).one(&state.database).await {
         Ok(Some(athlete)) => athlete.access_token,
         Ok(None) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Missing athlete ID: {}", athlete_id)).into_response(),
