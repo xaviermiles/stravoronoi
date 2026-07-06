@@ -8,8 +8,8 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use sea_orm::ActiveValue::Set;
-use serde::Deserialize;
 use sea_orm::EntityTrait;
+use serde::Deserialize;
 
 /// Start the OAuth flow: generate a `state` value and redirect the user to
 /// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
@@ -96,7 +96,17 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-/// Clear the session cookie and optionally deauthorize the athlete on Strava.
-pub async fn auth_logout(State(_state): State<AppState>) -> Response {
-    todo!()
+/// Clear the session by deleting it from the database. The frontend should
+/// also drop its stored `session_id`.
+pub async fn auth_logout(
+    State(state): State<AppState>,
+    athlete: crate::session::AuthedAthlete,
+) -> Response {
+    match models::session::Entity::delete_by_id(athlete.session_id)
+        .exec(&state.database)
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
 }
