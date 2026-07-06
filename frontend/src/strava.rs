@@ -9,6 +9,7 @@ use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
 use serde::{Deserialize, de::DeserializeOwned};
 use web_sys::RequestCredentials;
+use gloo_storage::{LocalStorage, Storage, errors::StorageError};
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
@@ -22,7 +23,17 @@ struct SummaryActivity {
 
 /// Generic fetch helper.
 async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, String> {
+    let session_id: String = match LocalStorage::get("session_id") {
+        Ok(session_id) => session_id,
+        Err(StorageError::KeyNotFound(_)) => return Ok(Vec::new()),
+        Err(err) => {
+            // Log unexpected errors.
+            log::info!("{}", err.to_string());
+            return Ok(Vec::new());
+        }
+    };
     let resp = Request::get(&url)
+        .header("Authorization", &format!("Bearer {session_id}"))
         .credentials(RequestCredentials::Include)
         .send()
         .await

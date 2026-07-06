@@ -64,15 +64,16 @@ pub async fn auth_callback(
             if let Err(err) = session.insert("athlete_id", tokens.athlete.id).await {
                 return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
             };
+            session.save().await.unwrap();
+            let callback_url = format!("{FRONTEND_URL}/callback?session_id={}", session.id().expect("save should have created an ID"));
             match models::athlete::Entity::insert(user).on_conflict_do_nothing().exec(&state.database).await {
-                Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
+                Ok(_) => Redirect::to(&callback_url).into_response(),
                 Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
             }
         }
-        // The code exchange failed. The most common cause is a single-use
-        // authorization code that has already been consumed or expired (e.g. a
-        // refreshed callback page). Send the user back through login to mint a
-        // fresh code rather than stranding them on a dead one.
+        // The code exchange failed. The most common cause is a single-use authorization code that
+        // has already been consumed or expired (e.g. a refreshed callback page). Send the user
+        // back through login to mint a fresh code rather than stranding them on a dead one.
         Err(e) => {
             eprintln!("code exchange failed, restarting login: {e}");
             Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
