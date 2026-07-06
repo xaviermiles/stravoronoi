@@ -76,19 +76,18 @@ async fn auth_callback(
         _ => return (StatusCode::BAD_REQUEST, "invalid OAuth state").into_response(),
     }
 
-    log::info!("{}", params.code);
-    log::info!("{}", params.state);
     match strava::exchange_code(&params.code).await {
         Ok(tokens) => {
             // TODO: upsert `_tokens` keyed by athlete id, create a session, and
             // set a session cookie before redirecting.
             let user = models::athlete::ActiveModel {
-                strava_athlete_id: Set(0), // TODO: populate this correctly
+                strava_id: Set(tokens.athlete.id),
+                strava_username: Set(tokens.athlete.username),
                 access_token: Set(tokens.access_token.to_owned()),
                 refresh_token: Set(tokens.refresh_token.to_owned()),
                 expires_at: Set(tokens.expires_at.to_owned()),
             };
-            let mut cookie = Cookie::new("session_token", "blah blah blah");
+            let mut cookie = Cookie::new("strava_authorisation_code", tokens.access_token);
             cookie.set_path("/");
             cookie.set_http_only(true);
             cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
@@ -100,7 +99,14 @@ async fn auth_callback(
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }
         }
-        Err(e) => (StatusCode::BAD_GATEWAY, e).into_response(),
+        // The code exchange failed. The most common cause is a single-use
+        // authorization code that has already been consumed or expired (e.g. a
+        // refreshed callback page). Send the user back through login to mint a
+        // fresh code rather than stranding them on a dead one.
+        Err(e) => {
+            eprintln!("code exchange failed, restarting login: {e}");
+            Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
+        }
     }
 }
 
