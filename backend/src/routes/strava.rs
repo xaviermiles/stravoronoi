@@ -7,9 +7,9 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Redirect, Response},
 };
-use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue::Set;
 use serde::Deserialize;
+use sea_orm::EntityTrait;
 use tower_cookies::{Cookie, Cookies};
 
 /// Start the OAuth flow: generate a `state` value and redirect the user to
@@ -70,7 +70,7 @@ pub async fn auth_callback(
             cookie.set_secure(true); // Enable in production over HTTPS
 
             cookies.add(cookie);
-            match user.insert(&state.database).await {
+            match models::athlete::Entity::insert(user).on_conflict_do_nothing().exec(&state.database).await {
                 Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
                 Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
             }

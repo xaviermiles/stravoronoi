@@ -1,4 +1,5 @@
 use sea_orm::entity::prelude::*;
+use sea_orm::EntityTrait;
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
