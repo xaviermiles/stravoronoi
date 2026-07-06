@@ -8,6 +8,7 @@ use crate::BACKEND_BASE_URL;
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
 use serde::{Deserialize, de::DeserializeOwned};
+use web_sys::RequestCredentials;
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
@@ -22,6 +23,7 @@ struct SummaryActivity {
 /// Generic fetch helper.
 async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, String> {
     let resp = Request::get(&url)
+        .credentials(RequestCredentials::Include)
         .send()
         .await
         .map_err(|e| format!("{error_name} request failed: {e}"))?;

@@ -12,6 +12,8 @@ use serde::Deserialize;
 use sea_orm::EntityTrait;
 use tower_cookies::{Cookie, Cookies};
 
+pub const STRAVA_COOKIE_NAME: &str = "strava_access_token";
+
 /// Start the OAuth flow: generate a `state` value and redirect the user to
 /// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
 /// in a cookie so we can verify it on the callback.
@@ -54,8 +56,6 @@ pub async fn auth_callback(
 
     match services::strava::exchange_code(&params.code).await {
         Ok(tokens) => {
-            // TODO: upsert `_tokens` keyed by athlete id, create a session, and
-            // set a session cookie before redirecting.
             let user = models::athlete::ActiveModel {
                 strava_id: Set(tokens.athlete.id),
                 strava_username: Set(tokens.athlete.username),
@@ -63,11 +63,10 @@ pub async fn auth_callback(
                 refresh_token: Set(tokens.refresh_token.to_owned()),
                 expires_at: Set(tokens.expires_at.to_owned()),
             };
-            let mut cookie = Cookie::new("strava_authorisation_code", tokens.access_token);
-            cookie.set_path("/");
-            cookie.set_http_only(true);
-            cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
-            cookie.set_secure(true); // Enable in production over HTTPS
+            let mut cookie = Cookie::new(STRAVA_COOKIE_NAME, tokens.access_token);
+            cookie.set_path("/api");
+            cookie.set_same_site(tower_cookies::cookie::SameSite::None);
+            cookie.set_secure(true);
 
             cookies.add(cookie);
             match models::athlete::Entity::insert(user).on_conflict_do_nothing().exec(&state.database).await {

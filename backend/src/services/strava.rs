@@ -97,7 +97,7 @@ fn http_client() -> reqwest::Client {
 pub fn authorize_url() -> (Url, CsrfToken) {
     oauth_client()
         .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new("activity:read".to_string()))
+        .add_scope(Scope::new("activity:read_all".to_string()))
         .url()
 }
 

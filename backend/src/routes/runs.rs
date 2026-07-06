@@ -12,7 +12,7 @@ use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use tower_cookies::Cookies;
 
-use crate::{AppState, services};
+use crate::{AppState, services, routes};
 
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
@@ -22,13 +22,13 @@ const PER_PAGE: u32 = 5;
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct PolylineMap {
     #[serde(default)]
     summary_polyline: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct SummaryActivity {
     #[serde(default)]
     name: String,
@@ -81,12 +81,14 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 
 /// Fetch recent runs.
 pub async fn list_runs(State(_state): State<AppState>, cookies: Cookies) -> Response {
-    let access_token = cookies.get("strava_authorisation_code");
-    if access_token.is_none() {
-        log::info!("No access token");
-        return (StatusCode::OK, Json(Vec::<Run>::new())).into_response();
-    }
-    let activities = match fetch_activities(&access_token.unwrap().to_string()).await {
+    let access_token = match cookies.get(routes::strava::STRAVA_COOKIE_NAME) {
+        Some(cookie) => cookie.value().to_string(),
+        None => {
+            log::info!("No access token");
+            return (StatusCode::OK, Json(Vec::<Run>::new())).into_response();
+        }
+    };
+    let activities = match fetch_activities(&access_token).await {
         Ok(activities) => activities,
         Err(err) => return err.into_response(),
     };
