@@ -7,9 +7,9 @@
 use crate::BACKEND_BASE_URL;
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
+use gloo_storage::{LocalStorage, Storage, errors::StorageError};
 use serde::{Deserialize, de::DeserializeOwned};
 use web_sys::RequestCredentials;
-use gloo_storage::{LocalStorage, Storage, errors::StorageError};
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;

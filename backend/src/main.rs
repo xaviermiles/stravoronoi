@@ -39,7 +39,10 @@ async fn main() {
         .expect("need a database connection");
     let state = AppState { database };
 
-    let frontend_base_url = Url::parse(FRONTEND_URL).expect("Defined statically").origin().unicode_serialization();
+    let frontend_base_url = Url::parse(FRONTEND_URL)
+        .expect("Defined statically")
+        .origin()
+        .unicode_serialization();
     let cors = CorsLayer::new()
         .allow_origin(frontend_base_url.parse::<HeaderValue>().unwrap())
         .allow_methods([Method::GET])

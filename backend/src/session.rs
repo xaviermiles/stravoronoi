@@ -1,16 +1,16 @@
 //! Server-side session management and request authentication.
 //!
 //! Sessions live in the database (not a cookie), so they work across the cross-site frontend/
-//! backend split. The frontend stores the opaque `session_id` and sends it as 
+//! backend split. The frontend stores the opaque `session_id` and sends it as
 //! `Authorization: Bearer <session_id>`; the [`AuthedAthlete`] extractor resolves that header back
 //! to an athlete.
 
 use crate::AppState;
 use crate::models;
 use axum::extract::FromRequestParts;
+use axum::http::StatusCode;
 use axum::http::header::AUTHORIZATION;
 use axum::http::request::Parts;
-use axum::http::StatusCode;
 use sea_orm::ActiveValue::Set;
 use sea_orm::{ActiveModelTrait, DatabaseConnection, DbErr, EntityTrait};
 
