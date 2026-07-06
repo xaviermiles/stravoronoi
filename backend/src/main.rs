@@ -7,6 +7,7 @@ use sea_orm::DatabaseConnection;
 use std::time::Duration;
 use tower_cookies::CookieManagerLayer;
 use tower_http::cors::CorsLayer;
+use url::Url;
 
 mod models;
 mod routes;
@@ -39,8 +40,9 @@ async fn main() {
         .expect("need a database connection");
     let state = AppState { database };
 
+    let frontend_base_url = Url::parse(FRONTEND_URL).expect("Defined statically").origin().unicode_serialization();
     let cors = CorsLayer::new()
-        .allow_origin(FRONTEND_URL.parse::<HeaderValue>().unwrap())
+        .allow_origin(frontend_base_url.parse::<HeaderValue>().unwrap())
         .allow_methods([Method::GET])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
         .expose_headers([header::CONTENT_DISPOSITION])
