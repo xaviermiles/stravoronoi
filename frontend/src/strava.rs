@@ -1,13 +1,11 @@
 //! Minimal Strava API client for the browser (WASM).
 //!
-//! Asks the backend for a short-lived Strava access token, then fetches the athlete's most recent
-//! runs and returns them as a GeoJSON `FeatureCollection` of `LineString`s ready to hand to
-//! Mapbox.
+//! Fetches the athlete's most recent runs and returns them as a GeoJSON `FeatureCollection` of `
+//! LineString`s ready to hand to Mapbox.
 
-use crate::BACKEND_BASE_URL;
+use crate::{BACKEND_BASE_URL, session};
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
-use gloo_storage::{LocalStorage, Storage, errors::StorageError};
 use serde::{Deserialize, de::DeserializeOwned};
 use web_sys::RequestCredentials;
 
@@ -23,14 +21,9 @@ struct SummaryActivity {
 
 /// Generic fetch helper.
 async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, String> {
-    let session_id: String = match LocalStorage::get("session_id") {
-        Ok(session_id) => session_id,
-        Err(StorageError::KeyNotFound(_)) => return Ok(Vec::new()),
-        Err(err) => {
-            // Log unexpected errors.
-            log::info!("{}", err.to_string());
-            return Ok(Vec::new());
-        }
+    let session_id = match session::get_session_id() {
+        Some(session_id) => session_id,
+        None => return Ok(Vec::new()),
     };
     let resp = Request::get(&url)
         .header("Authorization", &format!("Bearer {session_id}"))

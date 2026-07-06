@@ -1,8 +1,8 @@
 mod map;
+mod session;
 mod strava;
 use gloo_history::BrowserHistory;
 use gloo_history::History;
-use gloo_storage::{LocalStorage, Storage};
 use serde::Deserialize;
 use yew::prelude::*;
 
@@ -15,8 +15,7 @@ pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
 
 #[function_component]
 fn LoginButton() -> Html {
-    let is_logged_in = LocalStorage::get::<String>("session_id").is_ok();
-    let (auth_endpoint, button_text) = if is_logged_in {
+    let (auth_endpoint, button_text) = if session::is_logged_in() {
         ("logout", "Log out")
     } else {
         ("login", "Log in")
@@ -50,9 +49,7 @@ fn SessionId() -> Html {
         Ok(CallbackQuery {
             session_id: Some(session_id),
         }) => {
-            if let Err(err) = LocalStorage::set("session_id", &session_id) {
-                log::warn!("Failed to set session ID: {}", err.to_string());
-            };
+            session::set_session_id(session_id);
             history.replace("/");
         }
         Ok(CallbackQuery { session_id: None }) => {
