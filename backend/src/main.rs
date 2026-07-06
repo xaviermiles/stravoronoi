@@ -1,21 +1,19 @@
 use axum::{
     Router,
-    body::Body,
-    extract::{Query, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
-    response::{IntoResponse, Redirect, Response},
+    extract::State,
+    http::{HeaderValue, Method, header},
+    response::Response,
     routing::get,
 };
-use sea_orm::ActiveModelTrait;
-use sea_orm::{ActiveValue::Set, DatabaseConnection};
-use serde::Deserialize;
+use sea_orm::DatabaseConnection;
 use std::time::Duration;
-use tower_cookies::{Cookie, CookieManagerLayer, Cookies};
+use tower_cookies::CookieManagerLayer;
 use tower_http::cors::CorsLayer;
 
 mod models;
+mod routes;
+mod services;
 mod session;
-mod strava;
 
 const FRONTEND_URL: &str = if cfg!(debug_assertions) {
     "http://localhost:8080"
@@ -34,94 +32,6 @@ struct AppState {
     database: DatabaseConnection,
     // TODO: reqwest::Client, Strava OAuth config (client id / secret / redirect
     // uri), and a session signing key.
-}
-
-/// Start the OAuth flow: generate a `state` value and redirect the user to
-/// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
-/// in a cookie so we can verify it on the callback.
-async fn auth_login(State(_state): State<AppState>) -> Response {
-    let (url, csrf) = strava::authorize_url();
-    Response::builder()
-        .status(StatusCode::FOUND)
-        .header(header::LOCATION, url.to_string())
-        .header(
-            header::SET_COOKIE,
-            format!(
-                "oauth_state={}; HttpOnly; SameSite=Lax; Path=/",
-                csrf.secret()
-            ),
-        )
-        .body(Body::empty())
-        .expect("failed to build redirect response")
-}
-
-#[derive(Deserialize)]
-struct AuthCallback {
-    code: String,
-    state: String,
-}
-
-/// Strava redirects here after the user approves. Verify `state`, exchange the
-/// `code` for tokens, upsert them keyed by athlete id, set a session cookie,
-/// then redirect back to the app.
-async fn auth_callback(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(params): Query<AuthCallback>,
-    cookies: Cookies,
-) -> Response {
-    // Verify the CSRF `state` against the value we stored in the login cookie.
-    match cookie_value(&headers, "oauth_state") {
-        Some(expected) if expected == params.state => {}
-        _ => return (StatusCode::BAD_REQUEST, "invalid OAuth state").into_response(),
-    }
-
-    match strava::exchange_code(&params.code).await {
-        Ok(tokens) => {
-            // TODO: upsert `_tokens` keyed by athlete id, create a session, and
-            // set a session cookie before redirecting.
-            let user = models::athlete::ActiveModel {
-                strava_id: Set(tokens.athlete.id),
-                strava_username: Set(tokens.athlete.username),
-                access_token: Set(tokens.access_token.to_owned()),
-                refresh_token: Set(tokens.refresh_token.to_owned()),
-                expires_at: Set(tokens.expires_at.to_owned()),
-            };
-            let mut cookie = Cookie::new("strava_authorisation_code", tokens.access_token);
-            cookie.set_path("/");
-            cookie.set_http_only(true);
-            cookie.set_same_site(tower_cookies::cookie::SameSite::Lax);
-            cookie.set_secure(true); // Enable in production over HTTPS
-
-            cookies.add(cookie);
-            match user.insert(&state.database).await {
-                Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-            }
-        }
-        // The code exchange failed. The most common cause is a single-use
-        // authorization code that has already been consumed or expired (e.g. a
-        // refreshed callback page). Send the user back through login to mint a
-        // fresh code rather than stranding them on a dead one.
-        Err(e) => {
-            eprintln!("code exchange failed, restarting login: {e}");
-            Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
-        }
-    }
-}
-
-/// Read a single cookie value from the request headers.
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
-    cookies.split(';').find_map(|pair| {
-        let (key, value) = pair.trim().split_once('=')?;
-        (key == name).then(|| value.to_string())
-    })
-}
-
-/// Clear the session cookie and optionally deauthorize the athlete on Strava.
-async fn auth_logout(State(_state): State<AppState>) -> Response {
-    todo!()
 }
 
 /// Return the signed-in athlete's runs as GeoJSON. Resolve the caller from the
@@ -147,9 +57,9 @@ async fn main() {
         .allow_credentials(true)
         .max_age(Duration::from_secs(3600));
     let app = Router::new()
-        .route("/auth/login", get(auth_login))
-        .route("/auth/callback", get(auth_callback))
-        .route("/auth/logout", get(auth_logout))
+        .route("/auth/login", get(routes::strava::auth_login))
+        .route("/auth/callback", get(routes::strava::auth_callback))
+        .route("/auth/logout", get(routes::strava::auth_logout))
         // .route("/api/runs", get(list_runs))
         .with_state(state)
         .layer(cors)

@@ -1,6 +1,5 @@
-use tower_sessions::service::SessionManagerLayer;
 use tower_sessions::MemoryStore;
-
+use tower_sessions::service::SessionManagerLayer;
 
 pub fn get_session_layer() -> SessionManagerLayer<MemoryStore> {
     // TODO: sign with key?

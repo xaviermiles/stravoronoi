@@ -56,8 +56,7 @@ type StravaClient<HasAuthUrl = EndpointNotSet, HasTokenUrl = EndpointNotSet> = C
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StravaAthlete {
     pub id: i64,
-    #[serde(default)]
-    pub username: String,
+    pub username: Option<String>,
 }
 /// The subset of Strava's token response that we care about.
 pub struct StravaTokens {
