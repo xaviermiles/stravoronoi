@@ -10,9 +10,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
-use tower_cookies::Cookies;
+use tower_sessions::Session;
+use sea_orm::EntityTrait;
 
-use crate::{AppState, services, routes};
+use crate::{AppState, services, models};
 
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
@@ -80,14 +81,18 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 }
 
 /// Fetch recent runs.
-pub async fn list_runs(State(_state): State<AppState>, cookies: Cookies) -> Response {
-    let access_token = match cookies.get(routes::strava::STRAVA_COOKIE_NAME) {
-        Some(cookie) => cookie.value().to_string(),
-        None => {
-            log::info!("No access token");
-            return (StatusCode::OK, Json(Vec::<Run>::new())).into_response();
-        }
+pub async fn list_runs(State(state): State<AppState>, session: Session) -> Response {
+    let athlete_id: i64 = match session.get("athlete_id").await {
+        Ok(Some(athlete_id)) => athlete_id,
+        Ok(None) => return (StatusCode::UNAUTHORIZED, "No current athlete ID").into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to find athlete ID: {}", err.to_string())).into_response(),
     };
+    let access_token = match models::athlete::Entity::find_by_id(athlete_id).one(&state.database).await {
+        Ok(Some(athlete)) => athlete.access_token,
+        Ok(None) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Missing athlete ID: {}", athlete_id)).into_response(),
+        Err(err) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("Error while finding athlete: {}", err.to_string())).into_response(),
+    };
+
     let activities = match fetch_activities(&access_token).await {
         Ok(activities) => activities,
         Err(err) => return err.into_response(),

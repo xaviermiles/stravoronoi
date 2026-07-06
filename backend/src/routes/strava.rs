@@ -10,9 +10,7 @@ use axum::{
 use sea_orm::ActiveValue::Set;
 use serde::Deserialize;
 use sea_orm::EntityTrait;
-use tower_cookies::{Cookie, Cookies};
-
-pub const STRAVA_COOKIE_NAME: &str = "strava_access_token";
+use tower_sessions::Session;
 
 /// Start the OAuth flow: generate a `state` value and redirect the user to
 /// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
@@ -44,9 +42,9 @@ pub struct AuthCallback {
 /// then redirect back to the app.
 pub async fn auth_callback(
     State(state): State<AppState>,
+    session: Session,
     headers: HeaderMap,
     Query(params): Query<AuthCallback>,
-    cookies: Cookies,
 ) -> Response {
     // Verify the CSRF `state` against the value we stored in the login cookie.
     match cookie_value(&headers, "oauth_state") {
@@ -63,15 +61,12 @@ pub async fn auth_callback(
                 refresh_token: Set(tokens.refresh_token.to_owned()),
                 expires_at: Set(tokens.expires_at.to_owned()),
             };
-            let mut cookie = Cookie::new(STRAVA_COOKIE_NAME, tokens.access_token);
-            cookie.set_path("/api");
-            cookie.set_same_site(tower_cookies::cookie::SameSite::None);
-            cookie.set_secure(true);
-
-            cookies.add(cookie);
+            if let Err(err) = session.insert("athlete_id", tokens.athlete.id).await {
+                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+            };
             match models::athlete::Entity::insert(user).on_conflict_do_nothing().exec(&state.database).await {
                 Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+                Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
             }
         }
         // The code exchange failed. The most common cause is a single-use

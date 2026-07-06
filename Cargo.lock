@@ -228,7 +228,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
- "tower-cookies",
  "tower-http 0.7.0",
  "tower-sessions",
  "url",
