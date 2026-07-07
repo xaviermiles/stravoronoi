@@ -6,6 +6,7 @@
 use crate::{BACKEND_BASE_URL, session};
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
+use http::status::StatusCode;
 use serde::{Deserialize, de::DeserializeOwned};
 use web_sys::RequestCredentials;
 
@@ -33,6 +34,10 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
         .map_err(|e| format!("{error_name} request failed: {e}"))?;
 
     if !resp.ok() {
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            session::delete_session_id();
+            return Ok(Vec::new());
+        }
         return Err(format!(
             "{error_name} request returned HTTP {}",
             resp.status()

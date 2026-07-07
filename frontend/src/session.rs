@@ -20,6 +20,11 @@ pub fn set_session_id(session_id: String) {
     };
 }
 
+pub fn delete_session_id() {
+    log::info!("Deleting session ID.");
+    LocalStorage::delete(SESSION_ID_KEY)
+}
+
 pub fn is_logged_in() -> bool {
     LocalStorage::get::<String>(SESSION_ID_KEY).is_ok()
 }
