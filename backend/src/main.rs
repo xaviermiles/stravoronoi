@@ -5,7 +5,6 @@ use axum::{
 };
 use sea_orm::DatabaseConnection;
 use std::time::Duration;
-use tower_cookies::CookieManagerLayer;
 use tower_http::cors::CorsLayer;
 use url::Url;
 
@@ -40,7 +39,10 @@ async fn main() {
         .expect("need a database connection");
     let state = AppState { database };
 
-    let frontend_base_url = Url::parse(FRONTEND_URL).expect("Defined statically").origin().unicode_serialization();
+    let frontend_base_url = Url::parse(FRONTEND_URL)
+        .expect("Defined statically")
+        .origin()
+        .unicode_serialization();
     let cors = CorsLayer::new()
         .allow_origin(frontend_base_url.parse::<HeaderValue>().unwrap())
         .allow_methods([Method::GET])
@@ -54,8 +56,6 @@ async fn main() {
         .route("/auth/logout", get(routes::strava::auth_logout))
         .route("/api/runs", get(routes::runs::list_runs))
         .with_state(state)
-        .layer(CookieManagerLayer::new())
-        .layer(session::get_session_layer())
         // CORS layer goes last so it executes first for incoming requests and wraps everything else.
         .layer(cors);
 

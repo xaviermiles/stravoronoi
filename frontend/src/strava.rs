@@ -1,12 +1,12 @@
 //! Minimal Strava API client for the browser (WASM).
 //!
-//! Asks the backend for a short-lived Strava access token, then fetches the athlete's most recent
-//! runs and returns them as a GeoJSON `FeatureCollection` of `LineString`s ready to hand to
-//! Mapbox.
+//! Fetches the athlete's most recent runs and returns them as a GeoJSON `FeatureCollection` of `
+//! LineString`s ready to hand to Mapbox.
 
-use crate::BACKEND_BASE_URL;
+use crate::{BACKEND_BASE_URL, session};
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
+use http::status::StatusCode;
 use serde::{Deserialize, de::DeserializeOwned};
 use web_sys::RequestCredentials;
 
@@ -20,28 +20,42 @@ struct SummaryActivity {
     polyline_map: String,
 }
 
+pub enum LoadError {
+    Unauthorized,
+    Other(String),
+}
+
 /// Generic fetch helper.
-async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, String> {
+async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, LoadError> {
+    let session_id = match session::get_session_id() {
+        Some(session_id) => session_id,
+        None => return Ok(Vec::new()),
+    };
     let resp = Request::get(&url)
+        .header("Authorization", &format!("Bearer {session_id}"))
         .credentials(RequestCredentials::Include)
         .send()
         .await
-        .map_err(|e| format!("{error_name} request failed: {e}"))?;
+        .map_err(|e| LoadError::Other(format!("{error_name} request failed: {e}")))?;
 
     if !resp.ok() {
-        return Err(format!(
+        if resp.status() == StatusCode::UNAUTHORIZED {
+            session::delete_session_id();
+            return Err(LoadError::Unauthorized)
+        }
+        return Err(LoadError::Other(format!(
             "{error_name} request returned HTTP {}",
             resp.status()
-        ));
+        )));
     }
 
     resp.json()
         .await
-        .map_err(|e| format!("Failed to parse {error_name}: {e}"))
+        .map_err(|e| LoadError::Other(format!("Failed to parse {error_name}: {e}")))
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
-async fn fetch_activities() -> Result<Vec<SummaryActivity>, String> {
+async fn fetch_activities() -> Result<Vec<SummaryActivity>, LoadError> {
     let url = format!("{BACKEND_BASE_URL}/api/runs");
     fetch_json(&url, "Activities").await
 }
@@ -58,7 +72,7 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 }
 
 /// Fetch recent runs and return them as a GeoJSON `FeatureCollection` of `LineString`s.
-pub async fn load_run_lines() -> Result<GeoJson, String> {
+pub async fn load_run_lines() -> Result<GeoJson, LoadError> {
     let activities = fetch_activities().await?;
 
     let mut features = Vec::new();

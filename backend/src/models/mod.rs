@@ -3,6 +3,7 @@ use sea_orm::DatabaseConnection;
 use sea_orm::DbErr;
 pub mod athlete;
 pub mod run;
+pub mod session;
 
 pub async fn connect_database() -> Result<DatabaseConnection, DbErr> {
     let database = Database::connect("sqlite::memory:").await?;

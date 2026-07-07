@@ -8,11 +8,8 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use sea_orm::ActiveValue::Set;
-use serde::Deserialize;
 use sea_orm::EntityTrait;
-use tower_cookies::{Cookie, Cookies};
-
-pub const STRAVA_COOKIE_NAME: &str = "strava_access_token";
+use serde::Deserialize;
 
 /// Start the OAuth flow: generate a `state` value and redirect the user to
 /// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
@@ -46,7 +43,6 @@ pub async fn auth_callback(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<AuthCallback>,
-    cookies: Cookies,
 ) -> Response {
     // Verify the CSRF `state` against the value we stored in the login cookie.
     match cookie_value(&headers, "oauth_state") {
@@ -56,28 +52,34 @@ pub async fn auth_callback(
 
     match services::strava::exchange_code(&params.code).await {
         Ok(tokens) => {
+            let athlete_id = tokens.athlete.id;
             let user = models::athlete::ActiveModel {
-                strava_id: Set(tokens.athlete.id),
+                strava_id: Set(athlete_id),
                 strava_username: Set(tokens.athlete.username),
                 access_token: Set(tokens.access_token.to_owned()),
                 refresh_token: Set(tokens.refresh_token.to_owned()),
                 expires_at: Set(tokens.expires_at.to_owned()),
             };
-            let mut cookie = Cookie::new(STRAVA_COOKIE_NAME, tokens.access_token);
-            cookie.set_path("/api");
-            cookie.set_same_site(tower_cookies::cookie::SameSite::None);
-            cookie.set_secure(true);
-
-            cookies.add(cookie);
-            match models::athlete::Entity::insert(user).on_conflict_do_nothing().exec(&state.database).await {
-                Ok(_) => Redirect::to(FRONTEND_URL).into_response(),
-                Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+            if let Err(err) = models::athlete::Entity::insert(user)
+                .on_conflict_do_nothing()
+                .exec(&state.database)
+                .await
+            {
+                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+            }
+            // Mint an opaque session and hand its id to the frontend, which
+            // stores it and sends it back as a bearer token.
+            match crate::session::create_session(&state.database, athlete_id).await {
+                Ok(session_id) => {
+                    let callback_url = format!("{FRONTEND_URL}/callback?session_id={session_id}");
+                    Redirect::to(&callback_url).into_response()
+                }
+                Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
             }
         }
-        // The code exchange failed. The most common cause is a single-use
-        // authorization code that has already been consumed or expired (e.g. a
-        // refreshed callback page). Send the user back through login to mint a
-        // fresh code rather than stranding them on a dead one.
+        // The code exchange failed. The most common cause is a single-use authorization code that
+        // has already been consumed or expired (e.g. a refreshed callback page). Send the user
+        // back through login to mint a fresh code rather than stranding them on a dead one.
         Err(e) => {
             eprintln!("code exchange failed, restarting login: {e}");
             Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
@@ -94,7 +96,17 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-/// Clear the session cookie and optionally deauthorize the athlete on Strava.
-pub async fn auth_logout(State(_state): State<AppState>) -> Response {
-    todo!()
+/// Clear the session by deleting it from the database. The frontend should
+/// also drop its stored `session_id`.
+pub async fn auth_logout(
+    State(state): State<AppState>,
+    athlete: crate::session::AuthedAthlete,
+) -> Response {
+    match models::session::Entity::delete_by_id(athlete.session_id)
+        .exec(&state.database)
+        .await
+    {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+    }
 }

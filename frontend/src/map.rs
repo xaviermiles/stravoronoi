@@ -10,15 +10,24 @@ const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 /// Strava's brand orange, used for all run lines.
 const RUN_LINE_COLOR: &str = "#fc4c02";
 
-struct Listener;
+struct Listener {
+    on_unauthorized: Callback<()>,
+}
 
 impl MapEventListener for Listener {
     fn on_load(&mut self, map: Rc<Map>, _e: event::MapBaseEvent) {
         // Once the base map style has loaded, fetch the runs and overlay them.
+        let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
             match strava::load_run_lines().await {
                 Ok(geojson) => add_run_layer(&map, geojson),
-                Err(e) => log::error!("failed to load Strava runs: {e}"),
+                Err(strava::LoadError::Unauthorized) => {
+                    log::info!("Session rejected: logging out.");
+                    on_unauthorized.emit(());
+                }
+                Err(strava::LoadError::Other(e)) => {
+                    log::error!("Failed to load Strava runs: {e}")
+                }
             }
         });
     }
@@ -53,7 +62,7 @@ fn create_map() -> Rc<Map> {
 }
 
 #[hook]
-pub fn use_map() -> Rc<RefCell<Option<Rc<Map>>>> {
+pub fn use_map(on_unauthorized: Callback<()>) -> Rc<RefCell<Option<Rc<Map>>>> {
     let map = use_mut_ref(|| Option::<Rc<Map>>::None);
 
     {
@@ -61,7 +70,7 @@ pub fn use_map() -> Rc<RefCell<Option<Rc<Map>>>> {
         use_effect_with_deps(
             move |_| {
                 let m = create_map();
-                if let Err(e) = m.on(Listener) {
+                if let Err(e) = m.on(Listener { on_unauthorized }) {
                     log::error!("failed to register map listener: {e:?}");
                 }
                 log::info!("Map created, waiting for load event");
