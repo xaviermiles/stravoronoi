@@ -231,6 +231,7 @@ dependencies = [
  "tower-cookies",
  "tower-http 0.7.0",
  "tower-sessions",
+ "url",
 ]
 
 [[package]]
