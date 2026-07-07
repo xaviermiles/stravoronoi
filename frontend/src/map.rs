@@ -1,9 +1,12 @@
 use crate::strava;
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
-use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, event};
+use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
 use std::{cell::RefCell, rc::Rc};
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
+use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
+use mapboxgl::style::Sources;
+use mapboxgl::{Source};
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 
@@ -53,8 +56,38 @@ fn add_run_layer(map: &Map, geojson: geojson::GeoJson) {
 }
 
 fn create_map() -> Rc<Map> {
+    let mut sources = Sources::new();
+    sources.insert(
+        "carto-light".into(),
+        Source {
+            r#type: "raster".into(),
+            // The @2x is to avoid upscaling blue to make the rendering sharper on HiDPI screens.
+            tiles: Some(vec![
+                "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
+                "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
+                "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
+                "https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
+            ]),
+            ..Default::default()
+        },
+    );
+    let layers: Vec<Layer> = vec![RasterLayer {
+        id: "carto-light-layer".into(),
+        source: "carto-light".into(),
+        minzoom: Some(0.0),
+        maxzoom: Some(21.0),
+        ..Default::default()
+    }
+    .into_layer()];
+
     // The default coordinates are Christchurch.
     let opts = MapOptions::new(MAPBOX_TOKEN.into(), "map".into())
+        .style(Style {
+            version: 8,
+            sources,
+            layers,
+            ..Default::default()
+        })
         .center(LngLat::new(172.637491, -43.530950))
         .zoom(13.0);
 

@@ -1,0 +1,4 @@
+/* Hide the "Improve this map" link in the attribute footnotes. */
+.mapbox-improve-map {
+    display: none;
+}
