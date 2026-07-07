@@ -1,12 +1,12 @@
 use crate::strava;
+use mapboxgl::Source;
+use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
+use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
 use std::{cell::RefCell, rc::Rc};
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
-use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
-use mapboxgl::style::Sources;
-use mapboxgl::{Source};
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 
@@ -71,14 +71,16 @@ fn create_map() -> Rc<Map> {
             ..Default::default()
         },
     );
-    let layers: Vec<Layer> = vec![RasterLayer {
-        id: "carto-light-layer".into(),
-        source: "carto-light".into(),
-        minzoom: Some(0.0),
-        maxzoom: Some(21.0),
-        ..Default::default()
-    }
-    .into_layer()];
+    let layers: Vec<Layer> = vec![
+        RasterLayer {
+            id: "carto-light-layer".into(),
+            source: "carto-light".into(),
+            minzoom: Some(0.0),
+            maxzoom: Some(21.0),
+            ..Default::default()
+        }
+        .into_layer(),
+    ];
 
     // The default coordinates are Christchurch.
     let opts = MapOptions::new(MAPBOX_TOKEN.into(), "map".into())

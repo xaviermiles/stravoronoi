@@ -41,7 +41,7 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
     if !resp.ok() {
         if resp.status() == StatusCode::UNAUTHORIZED {
             session::delete_session_id();
-            return Err(LoadError::Unauthorized)
+            return Err(LoadError::Unauthorized);
         }
         return Err(LoadError::Other(format!(
             "{error_name} request returned HTTP {}",
