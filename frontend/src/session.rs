@@ -21,7 +21,6 @@ pub fn set_session_id(session_id: String) {
 }
 
 pub fn delete_session_id() {
-    log::info!("Deleting session ID.");
     LocalStorage::delete(SESSION_ID_KEY)
 }
 

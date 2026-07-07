@@ -20,8 +20,13 @@ struct SummaryActivity {
     polyline_map: String,
 }
 
+pub enum LoadError {
+    Unauthorized,
+    Other(String),
+}
+
 /// Generic fetch helper.
-async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, String> {
+async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, LoadError> {
     let session_id = match session::get_session_id() {
         Some(session_id) => session_id,
         None => return Ok(Vec::new()),
@@ -31,26 +36,26 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
         .credentials(RequestCredentials::Include)
         .send()
         .await
-        .map_err(|e| format!("{error_name} request failed: {e}"))?;
+        .map_err(|e| LoadError::Other(format!("{error_name} request failed: {e}")))?;
 
     if !resp.ok() {
         if resp.status() == StatusCode::UNAUTHORIZED {
             session::delete_session_id();
-            return Ok(Vec::new());
+            return Err(LoadError::Unauthorized)
         }
-        return Err(format!(
+        return Err(LoadError::Other(format!(
             "{error_name} request returned HTTP {}",
             resp.status()
-        ));
+        )));
     }
 
     resp.json()
         .await
-        .map_err(|e| format!("Failed to parse {error_name}: {e}"))
+        .map_err(|e| LoadError::Other(format!("Failed to parse {error_name}: {e}")))
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
-async fn fetch_activities() -> Result<Vec<SummaryActivity>, String> {
+async fn fetch_activities() -> Result<Vec<SummaryActivity>, LoadError> {
     let url = format!("{BACKEND_BASE_URL}/api/runs");
     fetch_json(&url, "Activities").await
 }
@@ -67,7 +72,7 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 }
 
 /// Fetch recent runs and return them as a GeoJSON `FeatureCollection` of `LineString`s.
-pub async fn load_run_lines() -> Result<GeoJson, String> {
+pub async fn load_run_lines() -> Result<GeoJson, LoadError> {
     let activities = fetch_activities().await?;
 
     let mut features = Vec::new();

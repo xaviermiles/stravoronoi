@@ -13,9 +13,14 @@ pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
     "https://stravoronoi-production.up.railway.app"
 };
 
+#[derive(Properties, PartialEq)]
+struct LoginButtonProps {
+    logged_in: bool,
+}
+
 #[function_component]
-fn LoginButton() -> Html {
-    let (auth_endpoint, button_text) = if session::is_logged_in() {
+fn LoginButton(props: &LoginButtonProps) -> Html {
+    let (auth_endpoint, button_text) = if props.logged_in {
         ("logout", "Log out")
     } else {
         ("login", "Log in")
@@ -42,14 +47,20 @@ struct CallbackQuery {
     session_id: Option<String>,
 }
 
+#[derive(Properties, PartialEq)]
+struct SessionIdProps {
+    on_login: Callback<()>,
+}
+
 #[function_component]
-fn SessionId() -> Html {
+fn SessionId(props: &SessionIdProps) -> Html {
     let history = BrowserHistory::new();
     match history.location().query::<CallbackQuery>() {
         Ok(CallbackQuery {
             session_id: Some(session_id),
         }) => {
             session::set_session_id(session_id);
+            props.on_login.emit(());
             history.replace("/");
         }
         Ok(CallbackQuery { session_id: None }) => {
@@ -64,13 +75,24 @@ fn SessionId() -> Html {
 
 #[function_component(App)]
 fn app() -> Html {
-    let _map = map::use_map();
+    let logged_in = use_state(session::is_logged_in);
+
+    let on_unauthorized = {
+        let logged_in = logged_in.clone();
+        Callback::from(move |_| logged_in.set(false))
+    };
+    let on_login = {
+        let logged_in = logged_in.clone();
+        Callback::from(move |_| logged_in.set(true))
+    };
+
+    let _map = map::use_map(on_unauthorized);
 
     html! {
       <div id="container">
         <div id="map" style="width: 100vw; height: 100vh;"></div>
-        <LoginButton />
-        <SessionId />
+        <LoginButton logged_in={*logged_in} />
+        <SessionId {on_login} />
       </div>
     }
 }
