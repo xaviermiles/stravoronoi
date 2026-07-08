@@ -3,6 +3,7 @@ use geojson::Value;
 use serde::{self, Deserialize};
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
+// The /driving endpoint only includes roads, while /walking matches to paths if they are closer.
 const MATCHING_URL: &str = "https://api.mapbox.com/matching/v5/mapbox/walking";
 /// Mapbox Map Matching accepts at most 100 coordinates per request.
 const MAX_MATCH_COORDS: usize = 100;
@@ -28,10 +29,10 @@ fn as_line(geom: &geojson::Geometry) -> Vec<Vec<f64>> {
 }
 
 /// Snap up to 100 points to the road/path network.
-async fn match_chunk(coords: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
+async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, String> {
     let path = coords
         .iter()
-        .map(|c| format!("{},{}", c[0], c[1])) // lng,lat
+        .map(|coord: &Coord<f64>| format!("{},{}", coord.x, coord.y)) // lng,lat
         .collect::<Vec<_>>()
         .join(";");
     // Per-point search radius (m). One value per coordinate is required.
@@ -61,10 +62,7 @@ async fn match_chunk(coords: &[Vec<f64>]) -> Result<Vec<Vec<f64>>, String> {
 }
 
 /// Map-match a full run, splitting into overlapping 100-point chunks.
-pub async fn map_match(coords: &[Vec<f64>]) -> Vec<Coord<f64>> {
-    // if coords.len() < 2 {
-    //     return coords.to_vec();
-    // }
+pub async fn map_match(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
     let mut out: Vec<Coord<f64>> = Vec::new();
     let mut start = 0;
     while start < coords.len() - 1 {
@@ -74,8 +72,9 @@ pub async fn map_match(coords: &[Vec<f64>]) -> Vec<Coord<f64>> {
         let mut seg = match match_chunk(chunk).await {
             Ok(s) => s,
             Err(e) => {
+                // TODO: is this fallback useful?
                 log::warn!("chunk match failed ({e}); using raw points");
-                chunk.to_vec()
+                chunk.into_iter().map(|coord| vec![coord.x, coord.y]).collect()
             }
         };
         // Chunks overlap by one input point; drop the seam vertex to reduce duplication.
