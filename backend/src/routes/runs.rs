@@ -18,8 +18,7 @@ use crate::{AppState, models, services};
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
 /// Number of most-recent activities to request.
-// TODO: this is so low because the map matching API takes a while. Could it stream the individual runs? Or cache the results?
-const PER_PAGE: u32 = 5;
+const PER_PAGE: u32 = 120;
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
 
@@ -118,6 +117,12 @@ pub async fn list_runs(State(state): State<AppState>, athlete: AuthedAthlete) ->
             Some(p) => p,
             None => continue,
         };
+        runs.push(Run {
+            name: activity.name,
+            polyline_map: encoded_coords,
+        });
+        // TODO: use the map matching somehow.
+        continue;
 
         let raw_coords = decode_line(&encoded_coords);
         if raw_coords.len() < 2 {
