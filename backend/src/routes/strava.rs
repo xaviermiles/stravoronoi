@@ -10,6 +10,7 @@ use axum::{
 use sea_orm::ActiveValue::Set;
 use sea_orm::EntityTrait;
 use serde::Deserialize;
+use url::Url;
 
 /// Start the OAuth flow: generate a `state` value and redirect the user to
 /// Strava's authorize page (scope `activity:read`). The CSRF `state` is stored
@@ -71,8 +72,11 @@ pub async fn auth_callback(
             // stores it and sends it back as a bearer token.
             match crate::session::create_session(&state.database, athlete_id).await {
                 Ok(session_id) => {
-                    let callback_url = format!("{FRONTEND_URL}/callback?session_id={session_id}");
-                    Redirect::to(&callback_url).into_response()
+                    let mut callback_url = Url::parse(FRONTEND_URL).expect("Defined statically");
+                    callback_url
+                        .query_pairs_mut()
+                        .append_pair("session_id", &session_id);
+                    Redirect::to(callback_url.as_str()).into_response()
                 }
                 Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
             }

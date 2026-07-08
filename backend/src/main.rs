@@ -16,7 +16,7 @@ mod session;
 const FRONTEND_URL: &str = if cfg!(debug_assertions) {
     "http://localhost:8080"
 } else {
-    "https://xaviermiles.github.io/stravoronoi/"
+    "https://xaviermiles.github.io/stravoronoi"
 };
 pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
     "http://localhost:3000"
