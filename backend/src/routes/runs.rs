@@ -123,6 +123,7 @@ pub async fn list_runs(State(state): State<AppState>, athlete: AuthedAthlete) ->
         //     name: activity.name,
         //     polyline_map: encoded_coords,
         // });
+        // TODO: use the map matching somehow.
         // continue;
 
         let raw_coords = decode_line(&encoded_coords);
