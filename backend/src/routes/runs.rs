@@ -8,10 +8,10 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use geo_types::Coord;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use sea_orm::EntityTrait;
 use serde::{Deserialize, Serialize};
-use geo_types::Coord;
 
 use crate::session::AuthedAthlete;
 use crate::{AppState, models, services};
@@ -83,8 +83,7 @@ fn decode_line(encoded: &str) -> Vec<Coord<f64>> {
 
 /// Fetch recent runs.
 pub async fn list_runs(State(state): State<AppState>, athlete: AuthedAthlete) -> Response {
-    let athlete_id = athlete.athlete_id;
-    let access_token = match models::athlete::Entity::find_by_id(athlete_id)
+    let access_token = match models::athlete::Entity::find_by_id(athlete.athlete_id)
         .one(&state.database)
         .await
     {
@@ -92,14 +91,14 @@ pub async fn list_runs(State(state): State<AppState>, athlete: AuthedAthlete) ->
         Ok(None) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Missing athlete ID: {}", athlete_id),
+                "Cannot find athlete for given session ID.",
             )
                 .into_response();
         }
         Err(err) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("Error while finding athlete: {}", err.to_string()),
+                format!("Error while finding athlete: {err}"),
             )
                 .into_response();
         }
@@ -145,7 +144,7 @@ pub async fn list_runs(State(state): State<AppState>, athlete: AuthedAthlete) ->
                 polyline_map: encoded_polyline_map,
             }),
             Err(err) => {
-                log::error!("{}", err.to_string())
+                log::error!("{err}")
             }
         }
     }

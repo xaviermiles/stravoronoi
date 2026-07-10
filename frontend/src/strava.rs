@@ -31,7 +31,7 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
         Some(session_id) => session_id,
         None => return Ok(Vec::new()),
     };
-    let resp = Request::get(&url)
+    let resp = Request::get(url)
         .header("Authorization", &format!("Bearer {session_id}"))
         .credentials(RequestCredentials::Include)
         .send()

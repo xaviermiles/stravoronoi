@@ -67,7 +67,7 @@ fn SessionId(props: &SessionIdProps) -> Html {
             // No session id in the URL (normal page load) — nothing to do.
         }
         Err(err) => {
-            log::warn!("Failed to parse location query: {}", err.to_string());
+            log::warn!("Failed to parse location query: {err}");
         }
     };
     html! { <div /> }

@@ -74,7 +74,7 @@ pub async fn map_match(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
             Err(e) => {
                 // TODO: is this fallback useful?
                 log::warn!("chunk match failed ({e}); using raw points");
-                chunk.into_iter().map(|coord| vec![coord.x, coord.y]).collect()
+                chunk.iter().map(|coord| vec![coord.x, coord.y]).collect()
             }
         };
         // Chunks overlap by one input point; drop the seam vertex to reduce duplication.

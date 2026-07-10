@@ -8,7 +8,7 @@ pub fn get_session_id() -> Option<String> {
         Err(StorageError::KeyNotFound(_)) => None,
         Err(err) => {
             // Log unexpected errors.
-            log::info!("{}", err.to_string());
+            log::info!("{err}");
             None
         }
     }
@@ -16,7 +16,7 @@ pub fn get_session_id() -> Option<String> {
 
 pub fn set_session_id(session_id: String) {
     if let Err(err) = LocalStorage::set(SESSION_ID_KEY, &session_id) {
-        log::warn!("Failed to set session ID: {}", err.to_string());
+        log::warn!("Failed to set session ID: {err}");
     };
 }
 
