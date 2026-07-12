@@ -54,7 +54,7 @@ async fn main() {
         .route("/auth/login", get(routes::strava::auth_login))
         .route("/auth/callback", get(routes::strava::auth_callback))
         .route("/auth/logout", get(routes::strava::auth_logout))
-        .route("/api/runs", get(routes::runs::list_runs))
+        .route("/api/runs", get(routes::runs::get_runs))
         .with_state(state)
         // CORS layer goes last so it executes first for incoming requests and wraps everything else.
         .layer(cors);

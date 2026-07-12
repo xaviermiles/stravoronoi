@@ -11,7 +11,6 @@ use oauth2::basic::{
     BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
     BasicTokenType,
 };
-use oauth2::reqwest;
 use oauth2::url::Url;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
@@ -19,10 +18,13 @@ use oauth2::{
     RequestTokenError, Scope, StandardRevocableToken, StandardTokenResponse, TokenResponse as _,
     TokenUrl,
 };
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
+/// URL to fetch activities for a given athelete.
+const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
 /// The extra fields Strava tacks onto its OAuth token response, on top of the
 /// standard OAuth fields. We only model the `athlete` object here.
@@ -84,10 +86,10 @@ fn oauth_client() -> StravaClient<EndpointSet, EndpointSet> {
         .set_auth_type(AuthType::RequestBody)
 }
 
-/// An HTTP client for talking to Strava. Redirects are disabled to avoid SSRF.
-fn http_client() -> reqwest::Client {
-    reqwest::ClientBuilder::new()
-        .redirect(reqwest::redirect::Policy::none())
+/// An HTTP client for talking to Strava oauth. Redirects are disabled to avoid SSRF.
+fn http_client() -> oauth2::reqwest::Client {
+    oauth2::reqwest::ClientBuilder::new()
+        .redirect(oauth2::reqwest::redirect::Policy::none())
         .build()
         .expect("failed to build HTTP client")
 }
@@ -160,4 +162,57 @@ fn into_tokens(token: &StravaTokenResponse) -> StravaTokens {
         expires_at,
         athlete: token.extra_fields().athlete.clone(),
     }
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-PolylineMap
+#[derive(Clone, Debug, Deserialize)]
+pub struct PolylineMap {
+    /// The summary polyline of the map.
+    #[serde(default)]
+    pub summary_polyline: Option<String>,
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-SummaryActivity
+#[derive(Clone, Debug, Deserialize)]
+pub struct SummaryActivity {
+    /// The unique identifier of the activity.
+    pub id: i32,
+    /// The name of the activity.
+    pub name: String,
+    /// An instance of SportType. TODO: enumerate
+    pub sport_type: String,
+    /// The time at which the activity was started.
+    pub start_date: i64,
+    /// An instance of PolylineMap.
+    pub map: PolylineMap,
+}
+
+/// Fetch the most recent activities for the authenticated athlete.
+///
+/// after_epoch: An epoch timestamp to use for filtering activities that have taken place after a certain time.
+pub async fn fetch_activities(
+    access_token: &str,
+    after_epoch: Option<i64>,
+) -> Result<Vec<SummaryActivity>, String> {
+    let url = match after_epoch {
+        Some(after_epoch) => format!("{ACTIVITIES_URL}&after={}", after_epoch),
+        None => ACTIVITIES_URL.to_string(),
+    };
+
+    let client = reqwest::Client::new();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+    );
+    let response: reqwest::Response = client
+        .get(url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|err| format!("Failed to get activities: {err}"))?;
+    response
+        .json::<Vec<SummaryActivity>>()
+        .await
+        .map_err(|err| err.to_string())
 }
