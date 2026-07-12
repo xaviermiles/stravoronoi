@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+comms = { path = "../comms" }
 futures = "0.3.32"
 geojson = "0.24"
 gloo-history = "0.3.0"

@@ -4,6 +4,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use comms::runs::RunResponse;
 use geo_types::Coord;
 use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue::Set;
@@ -11,7 +12,7 @@ use sea_orm::DatabaseConnection;
 use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::session::AuthedAthlete;
 use crate::{AppState, models, services};
@@ -107,17 +108,6 @@ pub struct RunQuery {
     pub after_id: Option<u64>,
 }
 
-// This is like the database model but without `is_final_activity` since the frontend doesn't need
-// to know that.
-#[derive(Serialize)]
-pub struct RunResponse {
-    pub strava_activity_id: i32,
-    /// Name of the activity.
-    name: String,
-    /// The summary map returned from Strava, as a Google Encoded Polyline.
-    summary_map: Option<String>,
-}
-
 // Get the latest runs for an athelete.
 pub async fn get_runs(
     State(state): State<AppState>,
@@ -152,10 +142,12 @@ pub async fn get_runs(
             // Is there a simpler way to do this?
             let runs_response: Vec<RunResponse> = runs
                 .iter()
-                .map(|run| RunResponse {
-                    strava_activity_id: run.strava_activity_id,
-                    name: run.name.clone(),
-                    summary_map: run.summary_map.clone(),
+                .filter_map(|run| {
+                    run.summary_map.clone().map(|map| RunResponse {
+                        strava_activity_id: run.strava_activity_id,
+                        name: run.name.clone(),
+                        summary_map: map,
+                    })
                 })
                 .collect();
             (

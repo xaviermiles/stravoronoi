@@ -7,18 +7,11 @@ use crate::{BACKEND_BASE_URL, session};
 use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use web_sys::RequestCredentials;
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
-
-// TODO: put frontend-backend API structs in shared crate
-#[derive(Deserialize)]
-struct SummaryActivity {
-    name: String,
-    polyline_map: String,
-}
 
 pub enum LoadError {
     Unauthorized,
@@ -55,7 +48,7 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
-async fn fetch_activities() -> Result<Vec<SummaryActivity>, LoadError> {
+async fn fetch_activities() -> Result<Vec<comms::runs::RunResponse>, LoadError> {
     let url = format!("{BACKEND_BASE_URL}/api/runs");
     fetch_json(&url, "Activities").await
 }
@@ -79,7 +72,7 @@ pub async fn load_run_lines() -> Result<GeoJson, LoadError> {
     for activity in activities.into_iter() {
         let mut properties = serde_json::Map::new();
         properties.insert("name".to_string(), serde_json::Value::String(activity.name));
-        let coords = decode_line(&activity.polyline_map);
+        let coords = decode_line(&activity.summary_map);
 
         features.push(Feature {
             bbox: None,

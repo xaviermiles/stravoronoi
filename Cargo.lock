@@ -214,6 +214,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "comms",
  "dotenvy",
  "geo-types",
  "geojson",
@@ -442,6 +443,13 @@ checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
 dependencies = [
  "bytes",
  "memchr",
+]
+
+[[package]]
+name = "comms"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -804,6 +812,7 @@ dependencies = [
 name = "frontend"
 version = "0.1.0"
 dependencies = [
+ "comms",
  "dotenvy",
  "futures",
  "geojson",
