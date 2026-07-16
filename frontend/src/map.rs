@@ -1,4 +1,4 @@
-use crate::strava;
+use crate::strava::{self, LoadState};
 use mapboxgl::Source;
 use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
@@ -22,36 +22,50 @@ impl MapEventListener for Listener {
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match strava::load_run_lines().await {
-                Ok(geojson) => add_run_layer(&map, geojson),
-                Err(strava::LoadError::Unauthorized) => {
-                    log::info!("Session rejected: logging out.");
-                    on_unauthorized.emit(());
-                }
-                Err(strava::LoadError::Other(e)) => {
-                    log::error!("Failed to load Strava runs: {e}")
+            let mut after_id: Option<i32> = None;
+            loop { 
+                match strava::load_run_lines(after_id).await {
+                    Ok(loaded_runs) => {
+                        add_run_layers(&map, loaded_runs.features);
+                        match loaded_runs.load_state {
+                            LoadState::Continue(next_after_id) => after_id = next_after_id,
+                            LoadState::Finished => break,
+                        }
+                    },
+                    Err(strava::LoadError::Unauthorized) => {
+                        log::info!("Session rejected: logging out.");
+                        on_unauthorized.emit(());
+                        break;
+                    }
+                    Err(strava::LoadError::Other(e)) => {
+                        log::error!("Failed to load Strava runs: {e}");
+                        break;
+                    }
                 }
             }
         });
     }
 }
 
-/// Add the decoded Strava runs to the map as a single-color line layer.
-fn add_run_layer(map: &Map, geojson: geojson::GeoJson) {
-    if let Err(e) = map.add_geojson_source("strava-runs", geojson) {
-        log::error!("failed to add Strava source: {e:?}");
-        return;
-    }
-    log::info!("Adding Strava run layer");
+/// Add the decoded Strava runs to the map as single-color line layers.
+fn add_run_layers(map: &Map, geojsons: Vec<geojson::GeoJson>) {
+    for geojson in geojsons {
+        // TODO: this should be using the ID of each run
+        if let Err(e) = map.add_geojson_source("strava-runs", geojson) {
+            log::error!("failed to add Strava source: {e:?}");
+            continue;
+        }
+        log::info!("Adding Strava run layer");
 
-    let mut layer = LineLayer::new("strava-runs", "strava-runs");
-    layer.layout.line_join = Some(LineJoin::Round.into());
-    layer.layout.line_cap = Some(LineCap::Round.into());
-    layer.paint.line_color = Some(RUN_LINE_COLOR.into());
-    layer.paint.line_width = Some(3.0.into());
+        let mut layer = LineLayer::new("strava-runs", "strava-runs");
+        layer.layout.line_join = Some(LineJoin::Round.into());
+        layer.layout.line_cap = Some(LineCap::Round.into());
+        layer.paint.line_color = Some(RUN_LINE_COLOR.into());
+        layer.paint.line_width = Some(3.0.into());
 
-    if let Err(e) = map.add_layer(layer, None) {
-        log::error!("failed to add Strava layer: {e:?}");
+        if let Err(e) = map.add_layer(layer, None) {
+            log::error!("failed to add Strava layer: {e:?}");
+        }
     }
 }
 

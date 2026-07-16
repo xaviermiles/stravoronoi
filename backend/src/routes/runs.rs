@@ -116,7 +116,7 @@ pub async fn get_runs(
 ) -> impl IntoResponse {
     let after_id = params.after_id.unwrap_or(0);
     match models::run::Entity::find()
-        .filter(models::run::COLUMN.strava_activity_id.gte(after_id))
+        .filter(models::run::COLUMN.strava_activity_id.gt(after_id))
         .limit(10)
         .all(&state.database)
         .await
