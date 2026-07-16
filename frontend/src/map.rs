@@ -4,6 +4,8 @@ use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
+use yew::platform::time;
+use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
@@ -42,6 +44,8 @@ impl MapEventListener for Listener {
                         break;
                     }
                 }
+                // Avoid spamming the backend with requests.
+                time::sleep(Duration::from_millis(100)).await;
             }
         });
     }

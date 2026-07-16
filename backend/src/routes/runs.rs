@@ -5,7 +5,6 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use comms::runs::RunResponse;
-use geo_types::Coord;
 use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue::Set;
 use sea_orm::DatabaseConnection;
@@ -20,12 +19,25 @@ use crate::{AppState, models, services};
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
 
-/// Decode a Strava encoded polyline into GeoJSON coordinates.
-fn decode_line(encoded: &str) -> Vec<Coord<f64>> {
-    match polyline::decode_polyline(encoded, POLYLINE_PRECISION) {
-        Ok(line) => line.into_inner(),
-        Err(_) => Vec::new(),
+// TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
+//       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
+/// Snap a Strava encoded polyline using map matching.
+#[allow(dead_code)]
+async fn snap_line(encoded_coords: &str) -> Result<String, String> {
+    let raw_coords = polyline::decode_polyline(encoded_coords, POLYLINE_PRECISION)
+        .map_err(|err| format!("Failed to decoded polyline {err}"))?
+        .into_inner();
+
+    if raw_coords.len() < 2 {
+        return Err("Less than 2 points means it isn't a line.".into());
     }
+    let snapped_coords = services::mapbox::map_match(&raw_coords).await;
+    if snapped_coords.len() < 2 {
+        return Err("Less than 2 points means it isn't a line.".into());
+    }
+
+    polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION)
+        .map_err(|err| format!("Failed to encode polyline: {err}"))
 }
 
 /// Start fetching runs.
@@ -38,40 +50,22 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
         Ok(None) => return Err("Cannot find athlete for given session ID.".to_string()),
         Err(err) => return Err(format!("Error while finding athlete: {err}")),
     };
+    log::info!("Start fetching runs for athlete ID: {athlete_id}");
 
     let mut final_activity_id: Option<i32> = None;
     let mut activities = services::strava::fetch_activities(&access_token, None).await?;
+    dbg!(&activities);
     while !activities.is_empty() {
         final_activity_id = Some(activities.last().expect("checked is_empty() above").id);
         for activity in activities.iter() {
             if !(activity.sport_type.contains("Run")) {
                 continue;
             }
-            let encoded_coords = match &activity.map.summary_polyline {
-                Some(p) => p,
-                None => continue,
-            };
-
-            let raw_coords = decode_line(encoded_coords);
-            if raw_coords.len() < 2 {
-                // Less than 2 points means it isn't a line.
-                continue;
-            }
-            // TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
-            //       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
-            let snapped_coords = services::mapbox::map_match(&raw_coords).await;
-            if snapped_coords.len() < 2 {
-                // Less than 2 points means it isn't a line.
-                continue;
-            }
-
-            let encoded_polyline_map =
-                polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION)
-                    .map_err(|err| format!("Failed to encoded polyline: {err}"))?;
+            // TODO: can clones be avoided?
             let run = models::run::ActiveModel {
                 strava_activity_id: Set(activity.id),
                 name: Set(activity.name.clone()),
-                summary_map: Set(Some(encoded_polyline_map)),
+                summary_map: Set(activity.map.summary_polyline.clone()),
                 is_final_activity: Set(false), // to be modified afterwards
             };
             models::run::Entity::insert(run)
@@ -84,6 +78,7 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
             .expect("checked is_empty() above")
             .start_date;
         activities = services::strava::fetch_activities(&access_token, Some(after_epoch)).await?;
+        dbg!(&activities);
     }
     // Update the final activity in the database to know it is the final activity.
     if let Some(activity_id) = final_activity_id {
