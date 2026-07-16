@@ -4,9 +4,9 @@ use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
-use yew::platform::time;
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
+use yew::platform::time;
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
 
@@ -25,7 +25,7 @@ impl MapEventListener for Listener {
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let mut after_id: Option<i32> = None;
-            loop { 
+            loop {
                 match strava::load_run_lines(after_id).await {
                     Ok(loaded_runs) => {
                         add_run_layers(&map, loaded_runs.features);
@@ -33,7 +33,7 @@ impl MapEventListener for Listener {
                             LoadState::Continue(next_after_id) => after_id = next_after_id,
                             LoadState::Finished => break,
                         }
-                    },
+                    }
                     Err(strava::LoadError::Unauthorized) => {
                         log::info!("Session rejected: logging out.");
                         on_unauthorized.emit(());
@@ -45,7 +45,7 @@ impl MapEventListener for Listener {
                     }
                 }
                 // Avoid spamming the backend with requests.
-                time::sleep(Duration::from_millis(100)).await;
+                time::sleep(Duration::from_secs(1)).await;
             }
         });
     }

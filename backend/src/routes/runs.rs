@@ -12,12 +12,19 @@ use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
 use serde::Deserialize;
+use tokio::time::{Duration, sleep};
 
+use crate::services::strava::FetchError;
 use crate::session::AuthedAthlete;
 use crate::{AppState, models, services};
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
+
+// This will retry 5 times. This backoff usually won't work since the rate limits are per 15
+// minutes and per 1 day, but it doesn't hurt since we will wait between requests anyway.
+const START_WAIT: Duration = Duration::from_millis(100);
+const MAX_WAIT: Duration = Duration::from_secs(2);
 
 // TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
 //       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
@@ -52,10 +59,31 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
     };
     tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
 
+    let mut current_wait = START_WAIT;
+    let mut after_epoch = None;
     let mut final_activity_id: Option<i32> = None;
-    let mut activities = services::strava::fetch_activities(&access_token, None).await?;
-    dbg!(&activities);
-    while !activities.is_empty() {
+    loop {
+        let activities = match services::strava::fetch_activities(&access_token, after_epoch).await
+        {
+            Ok(activities) => activities,
+            Err(FetchError::Backoff) => {
+                current_wait *= 2;
+                if current_wait > MAX_WAIT {
+                    break;
+                }
+                sleep(current_wait).await;
+                continue;
+            }
+            Err(FetchError::Other(message)) => {
+                tracing::error!("{message}");
+                break;
+            }
+        };
+        // Reset wait since we weren't told to backoff.
+        current_wait = START_WAIT;
+        if activities.is_empty() {
+            break;
+        }
         final_activity_id = Some(activities.last().expect("checked is_empty() above").id);
         for activity in activities.iter() {
             if !(activity.sport_type.contains("Run")) {
@@ -73,12 +101,13 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
                 .await
                 .map_err(|err| format!("Error while inserting run: {err}"))?;
         }
-        let after_epoch = activities
-            .last()
-            .expect("checked is_empty() above")
-            .start_date;
-        activities = services::strava::fetch_activities(&access_token, Some(after_epoch)).await?;
-        dbg!(&activities);
+        after_epoch = Some(
+            activities
+                .last()
+                .expect("checked is_empty() above")
+                .start_date,
+        );
+        sleep(current_wait).await;
     }
     // Update the final activity in the database to know it is the final activity.
     if let Some(activity_id) = final_activity_id {

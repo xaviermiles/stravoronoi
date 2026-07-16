@@ -37,7 +37,10 @@ pub enum LoadError {
 }
 
 /// Generic fetch helper.
-async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<(Vec<T>, CompleteDownload), LoadError> {
+async fn fetch_json<T: DeserializeOwned>(
+    url: &str,
+    error_name: &str,
+) -> Result<(Vec<T>, CompleteDownload), LoadError> {
     let session_id = match session::get_session_id() {
         Some(session_id) => session_id,
         None => return Ok((Vec::new(), CompleteDownload::Yes)),
@@ -64,10 +67,15 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
         return Ok((Vec::new(), CompleteDownload::No));
     }
 
-    let data = resp.json()
+    let data = resp
+        .json()
         .await
         .map_err(|e| LoadError::Other(format!("Failed to parse {error_name}: {e}")))?;
-    let load_state = if resp.status() == StatusCode::PARTIAL_CONTENT {CompleteDownload::No} else {CompleteDownload::Yes};
+    let load_state = if resp.status() == StatusCode::PARTIAL_CONTENT {
+        CompleteDownload::No
+    } else {
+        CompleteDownload::Yes
+    };
     Ok((data, load_state))
 }
 
@@ -75,7 +83,9 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
 ///
 /// `after_id` pages through results: only runs with a `strava_activity_id`
 /// at or beyond it are returned by the backend.
-async fn fetch_runs(after_id: Option<i32>) -> Result<(Vec<comms::runs::RunResponse>, CompleteDownload), LoadError> {
+async fn fetch_runs(
+    after_id: Option<i32>,
+) -> Result<(Vec<comms::runs::RunResponse>, CompleteDownload), LoadError> {
     let mut url = format!("{BACKEND_BASE_URL}/api/runs");
     if let Some(after_id) = after_id {
         url = format!("{url}?after_id={after_id}");
@@ -100,20 +110,29 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 pub async fn load_run_lines(after_id: Option<i32>) -> Result<LoadedRuns, LoadError> {
     let (runs, complete_download) = fetch_runs(after_id).await?;
 
-    let features = runs.iter().map(|run| {
-        let mut properties = serde_json::Map::new();
-        properties.insert("strava_activity_id".to_string(), serde_json::Value::Number(run.strava_activity_id.into()));
-        properties.insert("name".to_string(), serde_json::Value::String(run.name.clone()));
-        let coords = decode_line(&run.summary_map);
+    let features = runs
+        .iter()
+        .map(|run| {
+            let mut properties = serde_json::Map::new();
+            properties.insert(
+                "strava_activity_id".to_string(),
+                serde_json::Value::Number(run.strava_activity_id.into()),
+            );
+            properties.insert(
+                "name".to_string(),
+                serde_json::Value::String(run.name.clone()),
+            );
+            let coords = decode_line(&run.summary_map);
 
-        GeoJson::Feature(Feature {
-            bbox: None,
-            geometry: Some(Geometry::new(Value::LineString(coords))),
-            id: None,
-            properties: Some(properties),
-            foreign_members: None,
+            GeoJson::Feature(Feature {
+                bbox: None,
+                geometry: Some(Geometry::new(Value::LineString(coords))),
+                id: None,
+                properties: Some(properties),
+                foreign_members: None,
+            })
         })
-    }).collect();
+        .collect();
     let load_state = match complete_download {
         CompleteDownload::No => {
             let next_after_id = match runs.last() {

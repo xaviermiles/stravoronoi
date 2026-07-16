@@ -20,6 +20,8 @@ use oauth2::{
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
@@ -164,6 +166,49 @@ fn into_tokens(token: &StravaTokenResponse) -> StravaTokens {
     }
 }
 
+/// https://developers.strava.com/docs/reference/#api-models-Error
+#[derive(Deserialize)]
+pub struct Error {
+    /// The code associated with this error.
+    pub code: String,
+    /// The specific field or aspect of the resource associated with this error.
+    pub field: String,
+    /// The type of resource associated with this error.
+    pub resource: String,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Customize so only `x` and `y` are denoted.
+        write!(
+            f,
+            "Error(code={}, field={}, resource={})",
+            self.code, self.field, self.resource
+        )
+    }
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-Fault
+#[derive(Deserialize)]
+pub struct Fault {
+    /// The message of the fault.
+    pub message: String,
+    /// The set of specific errors associated with this fault, if any.
+    pub errors: Vec<Error>,
+}
+
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let joined_errors = self
+            .errors
+            .iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{}, errors=<{}>", self.message, joined_errors)
+    }
+}
+
 /// https://developers.strava.com/docs/reference/#api-models-PolylineMap
 #[derive(Clone, Debug, Deserialize)]
 pub struct PolylineMap {
@@ -187,13 +232,18 @@ pub struct SummaryActivity {
     pub map: PolylineMap,
 }
 
+pub enum FetchError {
+    Backoff,
+    Other(String),
+}
+
 /// Fetch the most recent activities for the authenticated athlete.
 ///
 /// after_epoch: An epoch timestamp to use for filtering activities that have taken place after a certain time.
 pub async fn fetch_activities(
     access_token: &str,
     after_epoch: Option<i64>,
-) -> Result<Vec<SummaryActivity>, String> {
+) -> Result<Vec<SummaryActivity>, FetchError> {
     let url = match after_epoch {
         Some(after_epoch) => format!("{ACTIVITIES_URL}&after={}", after_epoch),
         None => ACTIVITIES_URL.to_string(),
@@ -205,14 +255,22 @@ pub async fn fetch_activities(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
     );
-    let response: reqwest::Response = client
-        .get(url)
-        .headers(headers)
+    let response = client
+        .get(&url)
+        .headers(headers.clone())
         .send()
         .await
-        .map_err(|err| format!("Failed to get activities: {err}"))?;
+        .map_err(|err| FetchError::Other(format!("Failed to get activities: {err}")))?;
+    if !response.status().is_success() {
+        let fault = response
+            .json::<Fault>()
+            .await
+            .map_err(|err| FetchError::Other(format!("Failed to parse fault: {err}")))?;
+        tracing::info!("Request failed with fault: {fault}");
+        return Err(FetchError::Backoff);
+    }
     response
         .json::<Vec<SummaryActivity>>()
         .await
-        .map_err(|err| err.to_string())
+        .map_err(|err| FetchError::Other(format!("Failed to parse activities: {err}")))
 }
