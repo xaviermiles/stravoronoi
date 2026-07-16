@@ -50,7 +50,7 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
         Ok(None) => return Err("Cannot find athlete for given session ID.".to_string()),
         Err(err) => return Err(format!("Error while finding athlete: {err}")),
     };
-    log::info!("Start fetching runs for athlete ID: {athlete_id}");
+    tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
 
     let mut final_activity_id: Option<i32> = None;
     let mut activities = services::strava::fetch_activities(&access_token, None).await?;
@@ -117,6 +117,8 @@ pub async fn get_runs(
         .await
     {
         Ok(runs) => {
+            tracing::info!("{:?}", runs.is_empty());
+            tracing::info!("{:?}", params.after_id.is_none());
             let status_code = if runs.is_empty() {
                 if params.after_id.is_none() {
                     // Assume it hasn't been fetched before.
@@ -124,7 +126,7 @@ pub async fn get_runs(
                         if let Err(err) =
                             start_fetching_runs(&state.database, athlete.athlete_id).await
                         {
-                            log::error!("{err}");
+                            tracing::error!("{err}");
                         };
                     });
                 }
@@ -151,7 +153,7 @@ pub async fn get_runs(
             )
         }
         Err(err) => {
-            log::warn!(
+            tracing::warn!(
                 "Getting runs with athelete_id={}: {err}",
                 athlete.athlete_id
             );

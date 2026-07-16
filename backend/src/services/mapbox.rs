@@ -73,7 +73,7 @@ pub async fn map_match(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
             Ok(s) => s,
             Err(e) => {
                 // TODO: is this fallback useful?
-                log::warn!("chunk match failed ({e}); using raw points");
+                tracing::warn!("chunk match failed ({e}); using raw points");
                 chunk.iter().map(|coord| vec![coord.x, coord.y]).collect()
             }
         };
