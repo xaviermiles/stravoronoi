@@ -24,7 +24,7 @@ impl MapEventListener for Listener {
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let mut after_id: Option<i32> = None;
+            let mut after_id: Option<i64> = None;
             loop {
                 match strava::load_run_lines(after_id).await {
                     Ok(loaded_runs) => {

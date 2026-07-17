@@ -5,7 +5,7 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "run")]
 pub struct Model {
     #[sea_orm(primary_key)]
-    pub strava_activity_id: i32,
+    pub strava_activity_id: i64,
     /// Name of the activity.
     pub name: String,
     /// The summary map returned from Strava, as a Google Encoded Polyline.

@@ -61,7 +61,7 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
 
     let mut current_wait = START_WAIT;
     let mut after_epoch = None;
-    let mut final_activity_id: Option<i32> = None;
+    let mut final_activity_id: Option<i64> = None;
     loop {
         let activities = match services::strava::fetch_activities(&access_token, after_epoch).await
         {
@@ -151,6 +151,7 @@ pub async fn get_runs(
             let status_code = if runs.is_empty() {
                 if params.after_id.is_none() {
                     // Assume it hasn't been fetched before.
+                    // TODO: this needs to not start if it has start before but encounted an error.
                     tokio::spawn(async move {
                         if let Err(err) =
                             start_fetching_runs(&state.database, athlete.athlete_id).await

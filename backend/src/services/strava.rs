@@ -221,7 +221,7 @@ pub struct PolylineMap {
 #[derive(Clone, Debug, Deserialize)]
 pub struct SummaryActivity {
     /// The unique identifier of the activity.
-    pub id: i32,
+    pub id: i64,
     /// The name of the activity.
     pub name: String,
     /// An instance of SportType. TODO: enumerate
@@ -257,20 +257,20 @@ pub async fn fetch_activities(
     );
     let response = client
         .get(&url)
-        .headers(headers.clone())
+        .headers(headers)
         .send()
         .await
-        .map_err(|err| FetchError::Other(format!("Failed to get activities: {err}")))?;
+        .map_err(|err| FetchError::Other(format!("Failed to get activities: {err:?}")))?;
     if !response.status().is_success() {
         let fault = response
             .json::<Fault>()
             .await
-            .map_err(|err| FetchError::Other(format!("Failed to parse fault: {err}")))?;
+            .map_err(|err| FetchError::Other(format!("Failed to parse fault: {err:?}")))?;
         tracing::info!("Request failed with fault: {fault}");
         return Err(FetchError::Backoff);
     }
     response
         .json::<Vec<SummaryActivity>>()
         .await
-        .map_err(|err| FetchError::Other(format!("Failed to parse activities: {err}")))
+        .map_err(|err| FetchError::Other(format!("Failed to parse activities: {err:?}")))
 }
