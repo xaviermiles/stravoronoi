@@ -93,6 +93,7 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
             let run = models::run::ActiveModel {
                 strava_activity_id: Set(activity.id),
                 name: Set(activity.name.clone()),
+                start_date: Set(activity.start_date.into()),
                 summary_map: Set(activity.map.summary_polyline.clone()),
                 is_final_activity: Set(false), // to be modified afterwards
             };

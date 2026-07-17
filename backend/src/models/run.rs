@@ -8,6 +8,8 @@ pub struct Model {
     pub strava_activity_id: i64,
     /// Name of the activity.
     pub name: String,
+    /// The time at which the activity was started.
+    pub start_date: ChronoUnixTimestamp,
     /// The summary map returned from Strava, as a Google Encoded Polyline.
     pub summary_map: Option<String>,
     /// Whether this activity is the final activity for this athlete.

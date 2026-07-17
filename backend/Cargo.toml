@@ -18,7 +18,7 @@ reqwest = { version = "0.13.4", features = ["json"] }
 sea-orm = {
     version = "2.0.0-rc.41",
     default-features = false,
-    features = [ "entity-registry", "macros", "runtime-tokio-native-tls", "schema-sync", "sqlx-sqlite", "with-json" ]
+    features = [ "entity-registry", "macros", "runtime-tokio-native-tls", "schema-sync", "sqlx-sqlite", "with-chrono", "with-json" ]
 }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"

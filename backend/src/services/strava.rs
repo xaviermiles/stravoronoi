@@ -11,6 +11,7 @@ use oauth2::basic::{
     BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
     BasicTokenType,
 };
+use chrono::{DateTime, Utc};
 use oauth2::url::Url;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
@@ -227,7 +228,7 @@ pub struct SummaryActivity {
     /// An instance of SportType. TODO: enumerate
     pub sport_type: String,
     /// The time at which the activity was started.
-    pub start_date: i64,
+    pub start_date: DateTime<Utc>,
     /// An instance of PolylineMap.
     pub map: PolylineMap,
 }
@@ -242,7 +243,7 @@ pub enum FetchError {
 /// after_epoch: An epoch timestamp to use for filtering activities that have taken place after a certain time.
 pub async fn fetch_activities(
     access_token: &str,
-    after_epoch: Option<i64>,
+    after_epoch: Option<DateTime<Utc>>,
 ) -> Result<Vec<SummaryActivity>, FetchError> {
     let url = match after_epoch {
         Some(after_epoch) => format!("{ACTIVITIES_URL}&after={}", after_epoch),
@@ -266,7 +267,7 @@ pub async fn fetch_activities(
             .json::<Fault>()
             .await
             .map_err(|err| FetchError::Other(format!("Failed to parse fault: {err:?}")))?;
-        tracing::info!("Request failed with fault: {fault}");
+        tracing::error!("Request failed with fault: {fault}");
         return Err(FetchError::Backoff);
     }
     response
