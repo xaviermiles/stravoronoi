@@ -142,7 +142,7 @@ fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
 
 #[derive(Deserialize)]
 pub struct RunQuery {
-    pub after_id: Option<u64>,
+    pub before: Option<i64>,
 }
 
 // Get the latest runs for an athlete.
@@ -153,9 +153,9 @@ pub async fn get_runs(
 ) -> Response {
     // TODO: fetch newer activities.
     let mut athlete_runs = find_runs(athlete.athlete_id);
-    match params.after_id {
-        Some(after_id) => {
-            athlete_runs = athlete_runs.filter(models::run::COLUMN.strava_activity_id.gt(after_id))
+    match params.before {
+        Some(before_epoch) => {
+            athlete_runs = athlete_runs.filter(models::run::COLUMN.start_date.lt(before_epoch))
         }
         None => {
             // Assume this is the first of multiple paginated requests from the frontend.
@@ -198,10 +198,11 @@ pub async fn get_runs(
             let runs_response: Vec<RunResponse> = runs
                 .iter()
                 .filter_map(|run| {
-                    run.summary_map.clone().map(|map| RunResponse {
+                    run.summary_map.clone().map(|summary_map| RunResponse {
                         strava_activity_id: run.strava_activity_id,
                         name: run.name.clone(),
-                        summary_map: map,
+                        start_date: *run.start_date,
+                        summary_map,
                     })
                 })
                 .collect();

@@ -1,4 +1,5 @@
 use crate::strava::{self, LoadState};
+use chrono::{DateTime, Utc};
 use geojson::{Feature, GeoJson};
 use mapboxgl::Source;
 use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
@@ -25,13 +26,13 @@ impl MapEventListener for Listener {
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let mut after_id: Option<i64> = None;
+            let mut before: Option<DateTime<Utc>> = None;
             loop {
-                match strava::load_run_lines(after_id).await {
+                match strava::load_run_lines(before).await {
                     Ok(loaded_runs) => {
                         add_run_layers(&map, loaded_runs.features);
                         match loaded_runs.load_state {
-                            LoadState::Continue(next_after_id) => after_id = next_after_id,
+                            LoadState::Continue(next_before) => before = next_before,
                             LoadState::Finished => break,
                         }
                     }

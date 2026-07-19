@@ -4,6 +4,7 @@
 //! LineString`s ready to hand to Mapbox.
 
 use crate::{BACKEND_BASE_URL, session};
+use chrono::{DateTime, Utc};
 use geojson::{Feature, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
@@ -21,7 +22,7 @@ enum CompleteDownload {
 #[derive(PartialEq)]
 pub enum LoadState {
     /// Continue loading. Includes the next after_id.
-    Continue(Option<i64>),
+    Continue(Option<DateTime<Utc>>),
     /// Finished loading.
     Finished,
 }
@@ -87,11 +88,11 @@ async fn fetch_json<T: DeserializeOwned>(
 /// `after_id` pages through results: only runs with a `strava_activity_id`
 /// at or beyond it are returned by the backend.
 async fn fetch_runs(
-    after_id: Option<i64>,
+    before: Option<DateTime<Utc>>,
 ) -> Result<(Vec<comms::runs::RunResponse>, CompleteDownload), LoadError> {
     let mut url = format!("{BACKEND_BASE_URL}/api/runs");
-    if let Some(after_id) = after_id {
-        url = format!("{url}?after_id={after_id}");
+    if let Some(before) = before {
+        url = format!("{url}?before={}", before.timestamp());
     }
     fetch_json(&url, "Activities").await
 }
@@ -109,9 +110,9 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 
 /// Fetch recent runs and return them as a GeoJSON `FeatureCollection` of `LineString`s.
 ///
-/// Pass `after_id` to fetch the following page or pass `None` for the initial load.
-pub async fn load_run_lines(after_id: Option<i64>) -> Result<LoadedRuns, LoadError> {
-    let (runs, complete_download) = fetch_runs(after_id).await?;
+/// Pass `before` to fetch the following page or pass `None` for the initial load.
+pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns, LoadError> {
+    let (runs, complete_download) = fetch_runs(before).await?;
 
     let features = runs
         .iter()
@@ -135,11 +136,11 @@ pub async fn load_run_lines(after_id: Option<i64>) -> Result<LoadedRuns, LoadErr
         .collect();
     let load_state = match complete_download {
         CompleteDownload::No => {
-            let next_after_id = match runs.last() {
-                Some(last_run) => Some(last_run.strava_activity_id),
-                None => after_id,
+            let next_before = match runs.last() {
+                Some(last_run) => Some(last_run.start_date),
+                None => before,
             };
-            LoadState::Continue(next_after_id)
+            LoadState::Continue(next_before)
         }
         CompleteDownload::Yes => LoadState::Finished,
     };
