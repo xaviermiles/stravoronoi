@@ -3,14 +3,15 @@
 use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
+use chrono::{DateTime, Utc};
 use comms::runs::RunResponse;
-use sea_orm::ActiveModelTrait;
 use sea_orm::ActiveValue::Set;
 use sea_orm::DatabaseConnection;
 use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
+use sea_orm::{ActiveModelTrait, QueryOrder, Select};
 use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
@@ -47,8 +48,14 @@ async fn snap_line(encoded_coords: &str) -> Result<String, String> {
         .map_err(|err| format!("Failed to encode polyline: {err}"))
 }
 
-/// Start fetching runs.
-async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> Result<(), String> {
+/// Start fetching older runs before a given time.
+///
+/// If no time is given then all runs will be fetched.
+async fn fetch_older_runs(
+    database: &DatabaseConnection,
+    athlete_id: i64,
+    mut before_epoch: Option<DateTime<Utc>>,
+) -> Result<(), String> {
     let access_token = match models::athlete::Entity::find_by_id(athlete_id)
         .one(database)
         .await
@@ -60,10 +67,9 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
     tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
 
     let mut current_wait = START_WAIT;
-    let mut after_epoch = None;
     let mut final_activity_id: Option<i64> = None;
     loop {
-        let activities = match services::strava::fetch_activities(&access_token, after_epoch).await
+        let activities = match services::strava::fetch_activities(&access_token, before_epoch).await
         {
             Ok(activities) => activities,
             Err(FetchError::Backoff) => {
@@ -92,6 +98,7 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
             // TODO: can clones be avoided?
             let run = models::run::ActiveModel {
                 strava_activity_id: Set(activity.id),
+                athlete_id: Set(athlete_id),
                 name: Set(activity.name.clone()),
                 start_date: Set(activity.start_date.into()),
                 summary_map: Set(activity.map.summary_polyline.clone()),
@@ -102,7 +109,7 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
                 .await
                 .map_err(|err| format!("Error while inserting run: {err}"))?;
         }
-        after_epoch = Some(
+        before_epoch = Some(
             activities
                 .last()
                 .expect("checked is_empty() above")
@@ -128,39 +135,59 @@ async fn start_fetching_runs(database: &DatabaseConnection, athlete_id: i64) -> 
     Ok(())
 }
 
+/// Return a query to find the runs for a given athlete.
+fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
+    models::run::Entity::find().filter(models::run::COLUMN.athlete_id.eq(athlete_id))
+}
+
 #[derive(Deserialize)]
 pub struct RunQuery {
     pub after_id: Option<u64>,
 }
 
-// Get the latest runs for an athelete.
+// Get the latest runs for an athlete.
 pub async fn get_runs(
     State(state): State<AppState>,
     athlete: AuthedAthlete,
     Query(params): Query<RunQuery>,
-) -> impl IntoResponse {
-    let after_id = params.after_id.unwrap_or(0);
-    match models::run::Entity::find()
-        .filter(models::run::COLUMN.strava_activity_id.gt(after_id))
+) -> Response {
+    // TODO: fetch newer activities.
+    let mut athlete_runs = find_runs(athlete.athlete_id);
+    match params.after_id {
+        Some(after_id) => {
+            athlete_runs = athlete_runs.filter(models::run::COLUMN.strava_activity_id.gt(after_id))
+        }
+        None => {
+            // Assume this is the first of multiple paginated requests from the frontend.
+            let final_run = find_runs(athlete.athlete_id)
+                .order_by_asc(models::run::COLUMN.start_date)
+                .one(&state.database)
+                .await
+                .unwrap();
+            // Only need to fetch older runs if there isn't the "final" activity.
+            if final_run.is_none() || !final_run.as_ref().unwrap().is_final_activity {
+                let before_epoch = final_run.map(|run| *run.start_date);
+                tokio::spawn(async move {
+                    let database = models::connect_database()
+                        .await
+                        .expect("need a database connection");
+                    if let Err(err) =
+                        fetch_older_runs(&database, athlete.athlete_id, before_epoch).await
+                    {
+                        tracing::error!("{err}");
+                    };
+                });
+            }
+        }
+    }
+    match athlete_runs
+        .order_by_id_asc()
         .limit(10)
         .all(&state.database)
         .await
     {
         Ok(runs) => {
-            tracing::info!("{:?}", runs.is_empty());
-            tracing::info!("{:?}", params.after_id.is_none());
             let status_code = if runs.is_empty() {
-                if params.after_id.is_none() {
-                    // Assume it hasn't been fetched before.
-                    // TODO: this needs to not start if it has start before but encounted an error.
-                    tokio::spawn(async move {
-                        if let Err(err) =
-                            start_fetching_runs(&state.database, athlete.athlete_id).await
-                        {
-                            tracing::error!("{err}");
-                        };
-                    });
-                }
                 StatusCode::NO_CONTENT
             } else if runs[runs.len() - 1].is_final_activity {
                 StatusCode::OK
@@ -178,20 +205,11 @@ pub async fn get_runs(
                     })
                 })
                 .collect();
-            (
-                status_code,
-                Json(serde_json::json!({"runs": runs_response})),
-            )
+            (status_code, Json(runs_response)).into_response()
         }
         Err(err) => {
-            tracing::warn!(
-                "Getting runs with athelete_id={}: {err}",
-                athlete.athlete_id
-            );
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "failed to find runs"})),
-            )
+            tracing::error!("Getting runs for athlete_id={}: {err}", athlete.athlete_id);
+            (StatusCode::INTERNAL_SERVER_ERROR, "failed to find runs").into_response()
         }
     }
 }

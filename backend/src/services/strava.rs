@@ -7,11 +7,11 @@
 //! the request body (not as an HTTP Basic auth header).
 
 use crate::BACKEND_BASE_URL;
+use chrono::{DateTime, Utc};
 use oauth2::basic::{
     BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
     BasicTokenType,
 };
-use chrono::{DateTime, Utc};
 use oauth2::url::Url;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
@@ -22,7 +22,6 @@ use oauth2::{
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
@@ -240,13 +239,13 @@ pub enum FetchError {
 
 /// Fetch the most recent activities for the authenticated athlete.
 ///
-/// after_epoch: An epoch timestamp to use for filtering activities that have taken place after a certain time.
+/// before_epoch: An epoch timestamp to use for filtering activities that have taken place before a certain time.
 pub async fn fetch_activities(
     access_token: &str,
-    after_epoch: Option<DateTime<Utc>>,
+    before_epoch: Option<DateTime<Utc>>,
 ) -> Result<Vec<SummaryActivity>, FetchError> {
-    let url = match after_epoch {
-        Some(after_epoch) => format!("{ACTIVITIES_URL}&after={}", after_epoch),
+    let url = match before_epoch {
+        Some(before_epoch) => format!("{ACTIVITIES_URL}&before={}", before_epoch.timestamp()),
         None => ACTIVITIES_URL.to_string(),
     };
 
@@ -267,7 +266,7 @@ pub async fn fetch_activities(
             .json::<Fault>()
             .await
             .map_err(|err| FetchError::Other(format!("Failed to parse fault: {err:?}")))?;
-        tracing::error!("Request failed with fault: {fault}");
+        tracing::error!("Request (url={url}) failed with fault: {fault}");
         return Err(FetchError::Backoff);
     }
     response

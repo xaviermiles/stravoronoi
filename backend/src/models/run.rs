@@ -6,6 +6,8 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub strava_activity_id: i64,
+    /// Strava athelete ID.
+    pub athlete_id: i64,
     /// Name of the activity.
     pub name: String,
     /// The time at which the activity was started.
