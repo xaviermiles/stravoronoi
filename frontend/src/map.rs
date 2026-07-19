@@ -1,4 +1,5 @@
 use crate::strava::{self, LoadState};
+use geojson::{Feature, GeoJson};
 use mapboxgl::Source;
 use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
@@ -52,16 +53,17 @@ impl MapEventListener for Listener {
 }
 
 /// Add the decoded Strava runs to the map as single-color line layers.
-fn add_run_layers(map: &Map, geojsons: Vec<geojson::GeoJson>) {
-    for geojson in geojsons {
+fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
+    for (run_id, run_line) in run_lines {
         // TODO: this should be using the ID of each run
-        if let Err(e) = map.add_geojson_source("strava-runs", geojson) {
+        let layer_id = &run_id.to_string();
+        if let Err(e) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
             log::error!("failed to add Strava source: {e:?}");
             continue;
         }
         log::info!("Adding Strava run layer");
 
-        let mut layer = LineLayer::new("strava-runs", "strava-runs");
+        let mut layer = LineLayer::new(layer_id, layer_id);
         layer.layout.line_join = Some(LineJoin::Round.into());
         layer.layout.line_cap = Some(LineCap::Round.into());
         layer.paint.line_color = Some(RUN_LINE_COLOR.into());

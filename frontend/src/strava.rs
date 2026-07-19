@@ -4,7 +4,7 @@
 //! LineString`s ready to hand to Mapbox.
 
 use crate::{BACKEND_BASE_URL, session};
-use geojson::{Feature, GeoJson, Geometry, Value};
+use geojson::{Feature, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
 use serde::de::DeserializeOwned;
@@ -26,8 +26,11 @@ pub enum LoadState {
     Finished,
 }
 
+/// A batch of runs loaded from the backend.
 pub struct LoadedRuns {
-    pub features: Vec<GeoJson>,
+    /// Pairs of (strava activity ID, polyline feature).
+    pub features: Vec<(i64, Feature)>,
+    /// Loaded state of the runs for this athlete.
     pub load_state: LoadState,
 }
 
@@ -115,22 +118,19 @@ pub async fn load_run_lines(after_id: Option<i64>) -> Result<LoadedRuns, LoadErr
         .map(|run| {
             let mut properties = serde_json::Map::new();
             properties.insert(
-                "strava_activity_id".to_string(),
-                serde_json::Value::Number(run.strava_activity_id.into()),
-            );
-            properties.insert(
                 "name".to_string(),
                 serde_json::Value::String(run.name.clone()),
             );
             let coords = decode_line(&run.summary_map);
 
-            GeoJson::Feature(Feature {
+            let run_line = Feature {
                 bbox: None,
                 geometry: Some(Geometry::new(Value::LineString(coords))),
                 id: None,
                 properties: Some(properties),
                 foreign_members: None,
-            })
+            };
+            (run.strava_activity_id, run_line)
         })
         .collect();
     let load_state = match complete_download {

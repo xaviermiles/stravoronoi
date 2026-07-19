@@ -245,7 +245,7 @@ pub async fn fetch_activities(
     before_epoch: Option<DateTime<Utc>>,
 ) -> Result<Vec<SummaryActivity>, FetchError> {
     let url = match before_epoch {
-        Some(before_epoch) => format!("{ACTIVITIES_URL}&before={}", before_epoch.timestamp()),
+        Some(before_epoch) => format!("{ACTIVITIES_URL}?before={}", before_epoch.timestamp()),
         None => ACTIVITIES_URL.to_string(),
     };
 
