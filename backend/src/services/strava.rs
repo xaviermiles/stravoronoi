@@ -117,7 +117,6 @@ pub async fn exchange_code(code: &str) -> Result<StravaTokens, String> {
 }
 
 /// Refresh one user's expired access token using their stored refresh token.
-#[allow(dead_code)]
 pub async fn refresh_access_token(refresh_token: &str) -> Result<StravaTokens, String> {
     let token = oauth_client()
         .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))

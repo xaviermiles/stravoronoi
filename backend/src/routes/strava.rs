@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use sea_orm::ActiveValue::Set;
-use sea_orm::EntityTrait;
+use sea_orm::{ActiveModelTrait, EntityTrait};
 use serde::Deserialize;
 use url::Url;
 
@@ -54,18 +54,33 @@ pub async fn auth_callback(
     match services::strava::exchange_code(&params.code).await {
         Ok(tokens) => {
             let athlete_id = tokens.athlete.id;
-            let user = models::athlete::ActiveModel {
-                strava_id: Set(athlete_id),
-                strava_username: Set(tokens.athlete.username),
-                access_token: Set(tokens.access_token.to_owned()),
-                refresh_token: Set(tokens.refresh_token.to_owned()),
-                expires_at: Set(tokens.expires_at.to_owned()),
-            };
-            if let Err(err) = models::athlete::Entity::insert(user)
-                .on_conflict_do_nothing()
-                .exec(&state.database)
+            let upsert = match models::athlete::Entity::find_by_id(athlete_id)
+                .one(&state.database)
                 .await
             {
+                Ok(Some(existing)) => {
+                    // Overwrite the stored tokens otherwise they'd be stuck on stale credentials
+                    // as Strava rotates the refresh token on each refresh.
+                    let mut user: models::athlete::ActiveModel = existing.into();
+                    user.strava_username = Set(tokens.athlete.username);
+                    user.access_token = Set(tokens.access_token.to_owned());
+                    user.refresh_token = Set(tokens.refresh_token.to_owned());
+                    user.expires_at = Set(tokens.expires_at.to_owned());
+                    user.update(&state.database).await
+                }
+                Ok(None) => {
+                    let user = models::athlete::ActiveModel {
+                        strava_id: Set(athlete_id),
+                        strava_username: Set(tokens.athlete.username),
+                        access_token: Set(tokens.access_token.to_owned()),
+                        refresh_token: Set(tokens.refresh_token.to_owned()),
+                        expires_at: Set(tokens.expires_at.to_owned()),
+                    };
+                    user.insert(&state.database).await
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = upsert {
                 return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
             }
             // Mint an opaque session and hand its id to the frontend, which
