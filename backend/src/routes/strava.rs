@@ -81,7 +81,8 @@ pub async fn auth_callback(
                 Err(err) => Err(err),
             };
             if let Err(err) = upsert {
-                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+                tracing::error!("Failed to upsert athlete: {err}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Upsert failed.").into_response();
             }
             // Mint an opaque session and hand its id to the frontend, which
             // stores it and sends it back as a bearer token.
@@ -93,14 +94,17 @@ pub async fn auth_callback(
                         .append_pair("session_id", &session_id);
                     Redirect::to(callback_url.as_str()).into_response()
                 }
-                Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+                Err(err) => {
+                    tracing::error!("Failed to create session: {err}");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Creating session failed.").into_response();
+                }
             }
         }
         // The code exchange failed. The most common cause is a single-use authorization code that
         // has already been consumed or expired (e.g. a refreshed callback page). Send the user
         // back through login to mint a fresh code rather than stranding them on a dead one.
-        Err(e) => {
-            eprintln!("code exchange failed, restarting login: {e}");
+        Err(err) => {
+            eprintln!("code exchange failed, restarting login: {err}");
             Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
         }
     }
