@@ -126,7 +126,9 @@ async fn fetch_older_runs(
 
 /// Return a query to find the runs for a given athlete.
 fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
-    models::run::Entity::find().filter(models::run::COLUMN.athlete_id.eq(athlete_id))
+    models::run::Entity::find()
+        .filter(models::run::COLUMN.athlete_id.eq(athlete_id))
+        .order_by_desc(models::run::COLUMN.start_date)
 }
 
 /// Return a query to find the final downloaded run for a given athlete, as per the start date.
@@ -136,11 +138,7 @@ async fn find_final_downloaded_run(
     database: &DatabaseConnection,
     athlete_id: i64,
 ) -> Option<models::run::Model> {
-    find_runs(athlete_id)
-        .order_by_asc(models::run::COLUMN.start_date)
-        .one(database)
-        .await
-        .unwrap()
+    find_runs(athlete_id).one(database).await.unwrap()
 }
 
 #[derive(Deserialize)]
@@ -166,7 +164,7 @@ pub async fn get_runs(
             // Only need to fetch older runs if there isn't the "final" activity.
             let has_first_run = match &final_run {
                 Some(run) => run.is_first_run,
-                None => false
+                None => false,
             };
             if !has_first_run {
                 let before_epoch = final_run.map(|run| *run.start_date);
@@ -183,12 +181,7 @@ pub async fn get_runs(
             }
         }
     }
-    match athlete_runs
-        .order_by_id_asc()
-        .limit(10)
-        .all(&state.database)
-        .await
-    {
+    match athlete_runs.limit(10).all(&state.database).await {
         Ok(runs) => {
             let status_code = if runs.is_empty() {
                 StatusCode::NO_CONTENT
