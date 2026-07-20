@@ -99,7 +99,7 @@ async fn fetch_older_runs(
                     name: Set(activity.name.clone()),
                     start_date: Set(activity.start_date.into()),
                     summary_map: Set(activity.map.summary_polyline.clone()),
-                    is_final_activity: Set(false), // this will updated afterwards.
+                    is_first_run: Set(false), // this will updated afterwards.
                 }
             })
             .collect();
@@ -115,7 +115,7 @@ async fn fetch_older_runs(
     // Update the final run in the database to know it is the final one.
     if let Some(final_run) = find_final_downloaded_run(database, athlete_id).await {
         let mut final_run_active: models::run::ActiveModel = final_run.into();
-        final_run_active.is_final_activity = Set(true);
+        final_run_active.is_first_run = Set(true);
         final_run_active
             .update(database)
             .await
@@ -131,7 +131,7 @@ fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
 
 /// Return a query to find the final downloaded run for a given athlete, as per the start date.
 ///
-/// This run does not necessarily have `is_final_activity=true` (if not all runs have been downloaded).
+/// This run does not necessarily have `is_first_run=true` (if not all runs have been downloaded).
 async fn find_final_downloaded_run(
     database: &DatabaseConnection,
     athlete_id: i64,
@@ -164,7 +164,11 @@ pub async fn get_runs(
             // Assume this is the first of multiple paginated requests from the frontend.
             let final_run = find_final_downloaded_run(&state.database, athlete.athlete_id).await;
             // Only need to fetch older runs if there isn't the "final" activity.
-            if final_run.is_none() || !final_run.as_ref().unwrap().is_final_activity {
+            let has_first_run = match &final_run {
+                Some(run) => run.is_first_run,
+                None => false
+            };
+            if !has_first_run {
                 let before_epoch = final_run.map(|run| *run.start_date);
                 tokio::spawn(async move {
                     let database = models::connect_database()
@@ -188,7 +192,7 @@ pub async fn get_runs(
         Ok(runs) => {
             let status_code = if runs.is_empty() {
                 StatusCode::NO_CONTENT
-            } else if runs[runs.len() - 1].is_final_activity {
+            } else if runs[runs.len() - 1].is_first_run {
                 StatusCode::OK
             } else {
                 StatusCode::PARTIAL_CONTENT

@@ -14,8 +14,8 @@ pub struct Model {
     pub start_date: ChronoUnixTimestamp,
     /// The summary map returned from Strava, as a Google Encoded Polyline.
     pub summary_map: Option<String>,
-    /// Whether this activity is the final activity for this athlete.
-    pub is_final_activity: bool,
+    /// Whether this activity is the first run for this athlete.
+    pub is_first_run: bool,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
