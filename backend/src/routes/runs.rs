@@ -67,7 +67,6 @@ async fn fetch_older_runs(
     tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
 
     let mut current_wait = START_WAIT;
-    let mut final_activity_id: Option<i64> = None;
     loop {
         let activities = match services::strava::fetch_activities(&access_token, before_epoch).await
         {
@@ -75,59 +74,49 @@ async fn fetch_older_runs(
             Err(FetchError::Backoff) => {
                 current_wait *= 2;
                 if current_wait > MAX_WAIT {
-                    break;
+                    return Err("time out during backoff".to_string());
                 }
                 sleep(current_wait).await;
                 continue;
             }
-            Err(FetchError::Other(message)) => {
-                tracing::error!("{message}");
-                break;
-            }
+            Err(FetchError::Other(message)) => return Err(message),
         };
         // Reset wait since we weren't told to backoff.
         current_wait = START_WAIT;
-        if activities.is_empty() {
-            break;
-        }
-        final_activity_id = Some(activities.last().expect("checked is_empty() above").id);
-        for activity in activities.iter() {
-            if !(activity.sport_type.contains("Run")) {
-                continue;
-            }
-            // TODO: can clones be avoided?
-            let run = models::run::ActiveModel {
-                strava_activity_id: Set(activity.id),
-                athlete_id: Set(athlete_id),
-                name: Set(activity.name.clone()),
-                start_date: Set(activity.start_date.into()),
-                summary_map: Set(activity.map.summary_polyline.clone()),
-                is_final_activity: Set(false), // to be modified afterwards
-            };
-            models::run::Entity::insert(run)
-                .exec(database)
-                .await
-                .map_err(|err| format!("Error while inserting run: {err}"))?;
-        }
-        before_epoch = Some(
-            activities
-                .last()
-                .expect("checked is_empty() above")
-                .start_date,
-        );
+        before_epoch = match activities.last() {
+            Some(final_activity) => Some(final_activity.start_date),
+            // No activities.
+            None => break,
+        };
+        let runs: Vec<_> = activities
+            .iter()
+            .filter(|activity| activity.is_run())
+            .map(|activity| {
+                // TODO: can clones be avoided?
+                models::run::ActiveModel {
+                    strava_activity_id: Set(activity.id),
+                    athlete_id: Set(athlete_id),
+                    name: Set(activity.name.clone()),
+                    start_date: Set(activity.start_date.into()),
+                    summary_map: Set(activity.map.summary_polyline.clone()),
+                    is_final_activity: Set(false), // this will updated afterwards.
+                }
+            })
+            .collect();
+        // In practice it seems like the "before_epoch" is inclusive, so there will be some conflicts while paging.
+        models::run::Entity::insert_many(runs)
+            .on_conflict_do_nothing()
+            .exec(database)
+            .await
+            .map_err(|err| format!("Error while inserting runs: {err}"))?;
         sleep(current_wait).await;
     }
-    // Update the final activity in the database to know it is the final activity.
-    if let Some(activity_id) = final_activity_id {
-        let mut final_activity: models::run::ActiveModel =
-            models::run::Entity::find_by_id(activity_id)
-                .one(database)
-                .await
-                .map_err(|err| format!("Finding final activity: {err}"))?
-                .expect("final activity should be present")
-                .into();
-        final_activity.is_final_activity = Set(true);
-        final_activity
+    // If the loop above finished without returning an Err, then we know all the previous runs have been downloaded.
+    // Update the final run in the database to know it is the final one.
+    if let Some(final_run) = find_final_downloaded_run(database, athlete_id).await {
+        let mut final_run_active: models::run::ActiveModel = final_run.into();
+        final_run_active.is_final_activity = Set(true);
+        final_run_active
             .update(database)
             .await
             .map_err(|err| format!("Updating final activity: {err}"))?;
@@ -138,6 +127,20 @@ async fn fetch_older_runs(
 /// Return a query to find the runs for a given athlete.
 fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
     models::run::Entity::find().filter(models::run::COLUMN.athlete_id.eq(athlete_id))
+}
+
+/// Return a query to find the final downloaded run for a given athlete, as per the start date.
+///
+/// This run does not necessarily have `is_final_activity=true` (if not all runs have been downloaded).
+async fn find_final_downloaded_run(
+    database: &DatabaseConnection,
+    athlete_id: i64,
+) -> Option<models::run::Model> {
+    find_runs(athlete_id)
+        .order_by_asc(models::run::COLUMN.start_date)
+        .one(database)
+        .await
+        .unwrap()
 }
 
 #[derive(Deserialize)]
@@ -159,11 +162,7 @@ pub async fn get_runs(
         }
         None => {
             // Assume this is the first of multiple paginated requests from the frontend.
-            let final_run = find_runs(athlete.athlete_id)
-                .order_by_asc(models::run::COLUMN.start_date)
-                .one(&state.database)
-                .await
-                .unwrap();
+            let final_run = find_final_downloaded_run(&state.database, athlete.athlete_id).await;
             // Only need to fetch older runs if there isn't the "final" activity.
             if final_run.is_none() || !final_run.as_ref().unwrap().is_final_activity {
                 let before_epoch = final_run.map(|run| *run.start_date);

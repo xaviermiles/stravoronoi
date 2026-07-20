@@ -209,8 +209,69 @@ impl fmt::Display for Fault {
     }
 }
 
+/// https://developers.strava.com/docs/reference/#api-models-SportType
+#[derive(Debug, Deserialize, PartialEq)]
+pub enum SportType {
+    AlpineSki,
+    BackcountrySki,
+    Badminton,
+    Basketball,
+    Canoeing,
+    Cricket,
+    Crossfit,
+    Dance,
+    EBikeRide,
+    Elliptical,
+    EMountainBikeRide,
+    Golf,
+    GravelRide,
+    Handcycle,
+    HighIntensityIntervalTraining,
+    Hike,
+    IceSkate,
+    InlineSkate,
+    Kayaking,
+    Kitesurf,
+    MountainBikeRide,
+    NordicSki,
+    Padel,
+    PhysicalTherapy,
+    Pickleball,
+    Pilates,
+    Racquetball,
+    Ride,
+    RockClimbing,
+    RollerSki,
+    Rowing,
+    Run,
+    Sail,
+    Skateboard,
+    Snowboard,
+    Snowshoe,
+    Soccer,
+    Squash,
+    StairStepper,
+    StandUpPaddling,
+    Surfing,
+    Swim,
+    TableTennis,
+    Tennis,
+    TrailRun,
+    Velomobile,
+    VirtualRide,
+    VirtualRow,
+    VirtualRun,
+    Volleyball,
+    Walk,
+    WeightTraining,
+    Wheelchair,
+    Windsurf,
+    Workout,
+    Yoga,
+}
+
 /// https://developers.strava.com/docs/reference/#api-models-PolylineMap
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct PolylineMap {
     /// The summary polyline of the map.
     #[serde(default)]
@@ -218,18 +279,26 @@ pub struct PolylineMap {
 }
 
 /// https://developers.strava.com/docs/reference/#api-models-SummaryActivity
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 pub struct SummaryActivity {
     /// The unique identifier of the activity.
     pub id: i64,
     /// The name of the activity.
     pub name: String,
-    /// An instance of SportType. TODO: enumerate
-    pub sport_type: String,
+    /// An instance of SportType.
+    pub sport_type: SportType,
     /// The time at which the activity was started.
     pub start_date: DateTime<Utc>,
     /// An instance of PolylineMap.
     pub map: PolylineMap,
+}
+
+impl SummaryActivity {
+    const RUN_TYPES: [SportType; 2] = [SportType::Run, SportType::TrailRun];
+
+    pub fn is_run(&self) -> bool {
+        Self::RUN_TYPES.contains(&self.sport_type)
+    }
 }
 
 pub enum FetchError {
