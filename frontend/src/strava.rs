@@ -4,20 +4,35 @@
 //! LineString`s ready to hand to Mapbox.
 
 use crate::{BACKEND_BASE_URL, session};
-use geojson::{Feature, FeatureCollection, GeoJson, Geometry, Value};
+use chrono::{DateTime, Utc};
+use geojson::{Feature, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use web_sys::RequestCredentials;
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
 
-// TODO: put frontend-backend API structs in shared crate
-#[derive(Deserialize)]
-struct SummaryActivity {
-    name: String,
-    polyline_map: String,
+enum CompleteDownload {
+    Yes,
+    No,
+}
+
+#[derive(PartialEq)]
+pub enum LoadState {
+    /// Continue loading. Includes the next after_id.
+    Continue(Option<DateTime<Utc>>),
+    /// Finished loading.
+    Finished,
+}
+
+/// A batch of runs loaded from the backend.
+pub struct LoadedRuns {
+    /// Pairs of (strava activity ID, polyline feature).
+    pub features: Vec<(i64, Feature)>,
+    /// Loaded state of the runs for this athlete.
+    pub load_state: LoadState,
 }
 
 pub enum LoadError {
@@ -26,12 +41,15 @@ pub enum LoadError {
 }
 
 /// Generic fetch helper.
-async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<Vec<T>, LoadError> {
+async fn fetch_json<T: DeserializeOwned>(
+    url: &str,
+    error_name: &str,
+) -> Result<(Vec<T>, CompleteDownload), LoadError> {
     let session_id = match session::get_session_id() {
         Some(session_id) => session_id,
-        None => return Ok(Vec::new()),
+        None => return Ok((Vec::new(), CompleteDownload::Yes)),
     };
-    let resp = Request::get(&url)
+    let resp = Request::get(url)
         .header("Authorization", &format!("Bearer {session_id}"))
         .credentials(RequestCredentials::Include)
         .send()
@@ -41,22 +59,41 @@ async fn fetch_json<T: DeserializeOwned>(url: &str, error_name: &str) -> Result<
     if !resp.ok() {
         if resp.status() == StatusCode::UNAUTHORIZED {
             session::delete_session_id();
-            return Err(LoadError::Unauthorized)
+            return Err(LoadError::Unauthorized);
         }
         return Err(LoadError::Other(format!(
             "{error_name} request returned HTTP {}",
             resp.status()
         )));
     }
+    if resp.status() == StatusCode::NO_CONTENT {
+        // There will be no body to parse.
+        return Ok((Vec::new(), CompleteDownload::No));
+    }
 
-    resp.json()
+    let data = resp
+        .json()
         .await
-        .map_err(|e| LoadError::Other(format!("Failed to parse {error_name}: {e}")))
+        .map_err(|e| LoadError::Other(format!("Failed to parse {error_name}: {e}")))?;
+    let load_state = if resp.status() == StatusCode::PARTIAL_CONTENT {
+        CompleteDownload::No
+    } else {
+        CompleteDownload::Yes
+    };
+    Ok((data, load_state))
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
-async fn fetch_activities() -> Result<Vec<SummaryActivity>, LoadError> {
-    let url = format!("{BACKEND_BASE_URL}/api/runs");
+///
+/// `after_id` pages through results: only runs with a `strava_activity_id`
+/// at or beyond it are returned by the backend.
+async fn fetch_runs(
+    before: Option<DateTime<Utc>>,
+) -> Result<(Vec<comms::runs::RunResponse>, CompleteDownload), LoadError> {
+    let mut url = format!("{BACKEND_BASE_URL}/api/runs");
+    if let Some(before) = before {
+        url = format!("{url}?before={}", before.timestamp());
+    }
     fetch_json(&url, "Activities").await
 }
 
@@ -72,27 +109,44 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
 }
 
 /// Fetch recent runs and return them as a GeoJSON `FeatureCollection` of `LineString`s.
-pub async fn load_run_lines() -> Result<GeoJson, LoadError> {
-    let activities = fetch_activities().await?;
+///
+/// Pass `before` to fetch the following page or pass `None` for the initial load.
+pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns, LoadError> {
+    let (runs, complete_download) = fetch_runs(before).await?;
 
-    let mut features = Vec::new();
-    for activity in activities.into_iter() {
-        let mut properties = serde_json::Map::new();
-        properties.insert("name".to_string(), serde_json::Value::String(activity.name));
-        let coords = decode_line(&activity.polyline_map);
+    let features = runs
+        .iter()
+        .map(|run| {
+            let mut properties = serde_json::Map::new();
+            properties.insert(
+                "name".to_string(),
+                serde_json::Value::String(run.name.clone()),
+            );
+            let coords = decode_line(&run.summary_map);
 
-        features.push(Feature {
-            bbox: None,
-            geometry: Some(Geometry::new(Value::LineString(coords))),
-            id: None,
-            properties: Some(properties),
-            foreign_members: None,
+            let run_line = Feature {
+                bbox: None,
+                geometry: Some(Geometry::new(Value::LineString(coords))),
+                id: None,
+                properties: Some(properties),
+                foreign_members: None,
+            };
+            (run.strava_activity_id, run_line)
         })
-    }
+        .collect();
+    let load_state = match complete_download {
+        CompleteDownload::No => {
+            let next_before = match runs.last() {
+                Some(last_run) => Some(last_run.start_date),
+                None => before,
+            };
+            LoadState::Continue(next_before)
+        }
+        CompleteDownload::Yes => LoadState::Finished,
+    };
 
-    Ok(GeoJson::FeatureCollection(FeatureCollection {
-        bbox: None,
+    Ok(LoadedRuns {
         features,
-        foreign_members: None,
-    }))
+        load_state,
+    })
 }

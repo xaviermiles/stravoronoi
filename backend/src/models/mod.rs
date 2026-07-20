@@ -6,15 +6,11 @@ pub mod athlete;
 pub mod run;
 pub mod session;
 
+const DATABASE_URL: &str = "sqlite://stravoronoi.db?mode=rwc";
+
+/// Connect to the file-backed sqlite database.
 pub async fn connect_database() -> Result<DatabaseConnection, DbErr> {
-    // An in-memory SQLite database lives inside a single connection. sea-orm/sqlx
-    // opens a connection pool, so unless we pin the pool to a single connection,
-    // `schema-sync` creates the tables on one connection while later queries hit a
-    // different (empty) connection, causing "no such table" errors.
-    // TODO: should move to a "proper" file-backed database on a mounted volume so there can be multiple connections.
-    let mut options = ConnectOptions::new("sqlite::memory:");
-    options.max_connections(1).min_connections(1);
-    let database = Database::connect(options).await?;
+    let database = Database::connect(ConnectOptions::new(DATABASE_URL)).await?;
     database
         .get_schema_registry("backend::models::*")
         .sync(&database)

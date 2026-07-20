@@ -6,6 +6,8 @@ use axum::{
 use sea_orm::DatabaseConnection;
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
 mod models;
@@ -34,6 +36,11 @@ struct AppState {
 
 #[tokio::main]
 async fn main() {
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::filter::LevelFilter::INFO)
+        .with(tracing_subscriber::fmt::layer())
+        .init();
+
     let database = models::connect_database()
         .await
         .expect("need a database connection");
@@ -54,8 +61,9 @@ async fn main() {
         .route("/auth/login", get(routes::strava::auth_login))
         .route("/auth/callback", get(routes::strava::auth_callback))
         .route("/auth/logout", get(routes::strava::auth_logout))
-        .route("/api/runs", get(routes::runs::list_runs))
+        .route("/api/runs", get(routes::runs::get_runs))
         .with_state(state)
+        .layer(TraceLayer::new_for_http())
         // CORS layer goes last so it executes first for incoming requests and wraps everything else.
         .layer(cors);
 

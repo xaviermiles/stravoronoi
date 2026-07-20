@@ -7,11 +7,11 @@
 //! the request body (not as an HTTP Basic auth header).
 
 use crate::BACKEND_BASE_URL;
+use chrono::{DateTime, Utc};
 use oauth2::basic::{
     BasicErrorResponse, BasicRevocationErrorResponse, BasicTokenIntrospectionResponse,
     BasicTokenType,
 };
-use oauth2::reqwest;
 use oauth2::url::Url;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
@@ -19,10 +19,14 @@ use oauth2::{
     RequestTokenError, Scope, StandardRevocableToken, StandardTokenResponse, TokenResponse as _,
     TokenUrl,
 };
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
+/// URL to fetch activities for a given athelete.
+const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
 /// The extra fields Strava tacks onto its OAuth token response, on top of the
 /// standard OAuth fields. We only model the `athlete` object here.
@@ -84,10 +88,10 @@ fn oauth_client() -> StravaClient<EndpointSet, EndpointSet> {
         .set_auth_type(AuthType::RequestBody)
 }
 
-/// An HTTP client for talking to Strava. Redirects are disabled to avoid SSRF.
-fn http_client() -> reqwest::Client {
-    reqwest::ClientBuilder::new()
-        .redirect(reqwest::redirect::Policy::none())
+/// An HTTP client for talking to Strava oauth. Redirects are disabled to avoid SSRF.
+fn http_client() -> oauth2::reqwest::Client {
+    oauth2::reqwest::ClientBuilder::new()
+        .redirect(oauth2::reqwest::redirect::Policy::none())
         .build()
         .expect("failed to build HTTP client")
 }
@@ -160,4 +164,182 @@ fn into_tokens(token: &StravaTokenResponse) -> StravaTokens {
         expires_at,
         athlete: token.extra_fields().athlete.clone(),
     }
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-Error
+#[derive(Deserialize)]
+pub struct Error {
+    /// The code associated with this error.
+    pub code: String,
+    /// The specific field or aspect of the resource associated with this error.
+    pub field: String,
+    /// The type of resource associated with this error.
+    pub resource: String,
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        // Customize so only `x` and `y` are denoted.
+        write!(
+            f,
+            "Error(code={}, field={}, resource={})",
+            self.code, self.field, self.resource
+        )
+    }
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-Fault
+#[derive(Deserialize)]
+pub struct Fault {
+    /// The message of the fault.
+    pub message: String,
+    /// The set of specific errors associated with this fault, if any.
+    pub errors: Vec<Error>,
+}
+
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let joined_errors = self
+            .errors
+            .iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        write!(f, "{}, errors=<{}>", self.message, joined_errors)
+    }
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-SportType
+#[derive(Debug, Deserialize, PartialEq)]
+pub enum SportType {
+    AlpineSki,
+    BackcountrySki,
+    Badminton,
+    Basketball,
+    Canoeing,
+    Cricket,
+    Crossfit,
+    Dance,
+    EBikeRide,
+    Elliptical,
+    EMountainBikeRide,
+    Golf,
+    GravelRide,
+    Handcycle,
+    HighIntensityIntervalTraining,
+    Hike,
+    IceSkate,
+    InlineSkate,
+    Kayaking,
+    Kitesurf,
+    MountainBikeRide,
+    NordicSki,
+    Padel,
+    PhysicalTherapy,
+    Pickleball,
+    Pilates,
+    Racquetball,
+    Ride,
+    RockClimbing,
+    RollerSki,
+    Rowing,
+    Run,
+    Sail,
+    Skateboard,
+    Snowboard,
+    Snowshoe,
+    Soccer,
+    Squash,
+    StairStepper,
+    StandUpPaddling,
+    Surfing,
+    Swim,
+    TableTennis,
+    Tennis,
+    TrailRun,
+    Velomobile,
+    VirtualRide,
+    VirtualRow,
+    VirtualRun,
+    Volleyball,
+    Walk,
+    WeightTraining,
+    Wheelchair,
+    Windsurf,
+    Workout,
+    Yoga,
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-PolylineMap
+#[derive(Debug, Deserialize)]
+pub struct PolylineMap {
+    /// The summary polyline of the map.
+    #[serde(default)]
+    pub summary_polyline: Option<String>,
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-SummaryActivity
+#[derive(Debug, Deserialize)]
+pub struct SummaryActivity {
+    /// The unique identifier of the activity.
+    pub id: i64,
+    /// The name of the activity.
+    pub name: String,
+    /// An instance of SportType.
+    pub sport_type: SportType,
+    /// The time at which the activity was started.
+    pub start_date: DateTime<Utc>,
+    /// An instance of PolylineMap.
+    pub map: PolylineMap,
+}
+
+impl SummaryActivity {
+    const RUN_TYPES: [SportType; 2] = [SportType::Run, SportType::TrailRun];
+
+    pub fn is_run(&self) -> bool {
+        Self::RUN_TYPES.contains(&self.sport_type)
+    }
+}
+
+pub enum FetchError {
+    Backoff,
+    Other(String),
+}
+
+/// Fetch the most recent activities for the authenticated athlete.
+///
+/// before_epoch: An epoch timestamp to use for filtering activities that have taken place before a certain time.
+pub async fn fetch_activities(
+    access_token: &str,
+    before_epoch: Option<DateTime<Utc>>,
+) -> Result<Vec<SummaryActivity>, FetchError> {
+    let url = match before_epoch {
+        Some(before_epoch) => format!("{ACTIVITIES_URL}?before={}", before_epoch.timestamp()),
+        None => ACTIVITIES_URL.to_string(),
+    };
+
+    let client = reqwest::Client::new();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
+    );
+    let response = client
+        .get(&url)
+        .headers(headers)
+        .send()
+        .await
+        .map_err(|err| FetchError::Other(format!("Failed to get activities: {err:?}")))?;
+    if !response.status().is_success() {
+        let fault = response
+            .json::<Fault>()
+            .await
+            .map_err(|err| FetchError::Other(format!("Failed to parse fault: {err:?}")))?;
+        tracing::error!("Request (url={url}) failed with fault: {fault}");
+        return Err(FetchError::Backoff);
+    }
+    response
+        .json::<Vec<SummaryActivity>>()
+        .await
+        .map_err(|err| FetchError::Other(format!("Failed to parse activities: {err:?}")))
 }
