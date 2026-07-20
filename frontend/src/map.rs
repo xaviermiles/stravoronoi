@@ -17,6 +17,10 @@ const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 /// Strava's brand orange, used for all run lines.
 const RUN_LINE_COLOR: &str = "#fc4c02";
 
+// If the API returns nothing, avoid spamming the backend while it populates.
+const SLOW_CONTINUE_TIME: Duration = Duration::from_secs(1);
+const FAST_CONTINUE_TIME: Duration = Duration::from_millis(10);
+
 struct Listener {
     on_unauthorized: Callback<()>,
 }
@@ -28,14 +32,8 @@ impl MapEventListener for Listener {
         wasm_bindgen_futures::spawn_local(async move {
             let mut before: Option<DateTime<Utc>> = None;
             loop {
-                match strava::load_run_lines(before).await {
-                    Ok(loaded_runs) => {
-                        add_run_layers(&map, loaded_runs.features);
-                        match loaded_runs.load_state {
-                            LoadState::Continue(next_before) => before = next_before,
-                            LoadState::Finished => break,
-                        }
-                    }
+                let loaded_runs = match strava::load_run_lines(before).await {
+                    Ok(loaded_runs) => loaded_runs,
                     Err(strava::LoadError::Unauthorized) => {
                         log::info!("Session rejected: logging out.");
                         on_unauthorized.emit(());
@@ -45,9 +43,15 @@ impl MapEventListener for Listener {
                         log::error!("Failed to load Strava runs: {e}");
                         break;
                     }
-                }
-                // Avoid spamming the backend with requests.
-                time::sleep(Duration::from_secs(1)).await;
+                };
+                add_run_layers(&map, loaded_runs.features);
+                let next_before = match loaded_runs.load_state {
+                    LoadState::Continue(next_before) => next_before,
+                    LoadState::Finished => break,
+                };
+                let wait_time = if next_before == before {SLOW_CONTINUE_TIME} else {FAST_CONTINUE_TIME};
+                time::sleep(wait_time).await;
+                before = next_before;
             }
         });
     }
@@ -56,7 +60,6 @@ impl MapEventListener for Listener {
 /// Add the decoded Strava runs to the map as single-color line layers.
 fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
     for (run_id, run_line) in run_lines {
-        // TODO: this should be using the ID of each run
         let layer_id = &run_id.to_string();
         if let Err(e) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
             log::error!("failed to add Strava source: {e:?}");
