@@ -96,7 +96,11 @@ pub async fn auth_callback(
                 }
                 Err(err) => {
                     tracing::error!("Failed to create session: {err}");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Creating session failed.").into_response();
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Creating session failed.",
+                    )
+                        .into_response();
                 }
             }
         }
@@ -119,8 +123,7 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-/// Clear the session by deleting it from the database. The frontend should
-/// also drop its stored `session_id`.
+/// Logout the session by deleting it from the database.
 pub async fn auth_logout(
     State(state): State<AppState>,
     athlete: crate::session::AuthedAthlete,
@@ -130,6 +133,13 @@ pub async fn auth_logout(
         .await
     {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => {
+            tracing::error!("Failed to delete session ID: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to delete session ID.",
+            )
+                .into_response()
+        }
     }
 }
