@@ -49,7 +49,11 @@ impl MapEventListener for Listener {
                     LoadState::Continue(next_before) => next_before,
                     LoadState::Finished => break,
                 };
-                let wait_time = if next_before == before {SLOW_CONTINUE_TIME} else {FAST_CONTINUE_TIME};
+                let wait_time = if next_before == before {
+                    SLOW_CONTINUE_TIME
+                } else {
+                    FAST_CONTINUE_TIME
+                };
                 time::sleep(wait_time).await;
                 before = next_before;
             }
