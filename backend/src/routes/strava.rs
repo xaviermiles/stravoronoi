@@ -2,6 +2,7 @@ use crate::models;
 use crate::services;
 use crate::{AppState, BACKEND_BASE_URL, FRONTEND_URL};
 use axum::{
+    Json,
     body::Body,
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -155,6 +156,27 @@ pub async fn auth_logout(
                 "Failed to delete session ID.",
             )
                 .into_response()
+        }
+    }
+}
+
+/// Return the authenticated athlete's profile information.
+pub async fn get_me(
+    State(state): State<AppState>,
+    athlete: crate::session::AuthedAthlete,
+) -> Response {
+    match models::athlete::Entity::find_by_id(athlete.athlete_id)
+        .one(&state.database)
+        .await
+    {
+        Ok(Some(athlete)) => Json(comms::athlete::AthleteResponse {
+            profile_url: athlete.profile_url,
+        })
+        .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Athlete not found.").into_response(),
+        Err(err) => {
+            tracing::error!("Failed to load athlete: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load athlete.").into_response()
         }
     }
 }
