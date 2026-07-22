@@ -8,7 +8,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use sea_orm::ActiveValue::Set;
-use sea_orm::EntityTrait;
+use sea_orm::{ActiveModelTrait, EntityTrait};
 use serde::Deserialize;
 use url::Url;
 
@@ -54,19 +54,35 @@ pub async fn auth_callback(
     match services::strava::exchange_code(&params.code).await {
         Ok(tokens) => {
             let athlete_id = tokens.athlete.id;
-            let user = models::athlete::ActiveModel {
-                strava_id: Set(athlete_id),
-                strava_username: Set(tokens.athlete.username),
-                access_token: Set(tokens.access_token.to_owned()),
-                refresh_token: Set(tokens.refresh_token.to_owned()),
-                expires_at: Set(tokens.expires_at.to_owned()),
-            };
-            if let Err(err) = models::athlete::Entity::insert(user)
-                .on_conflict_do_nothing()
-                .exec(&state.database)
+            let upsert = match models::athlete::Entity::find_by_id(athlete_id)
+                .one(&state.database)
                 .await
             {
-                return (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response();
+                Ok(Some(existing)) => {
+                    // Overwrite the stored tokens otherwise they'd be stuck on stale credentials
+                    // as Strava rotates the refresh token on each refresh.
+                    let mut user: models::athlete::ActiveModel = existing.into();
+                    user.strava_username = Set(tokens.athlete.username);
+                    user.access_token = Set(tokens.access_token.to_owned());
+                    user.refresh_token = Set(tokens.refresh_token.to_owned());
+                    user.expires_at = Set(tokens.expires_at.to_owned());
+                    user.update(&state.database).await
+                }
+                Ok(None) => {
+                    let user = models::athlete::ActiveModel {
+                        strava_id: Set(athlete_id),
+                        strava_username: Set(tokens.athlete.username),
+                        access_token: Set(tokens.access_token.to_owned()),
+                        refresh_token: Set(tokens.refresh_token.to_owned()),
+                        expires_at: Set(tokens.expires_at.to_owned()),
+                    };
+                    user.insert(&state.database).await
+                }
+                Err(err) => Err(err),
+            };
+            if let Err(err) = upsert {
+                tracing::error!("Failed to upsert athlete: {err}");
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Upsert failed.").into_response();
             }
             // Mint an opaque session and hand its id to the frontend, which
             // stores it and sends it back as a bearer token.
@@ -78,14 +94,21 @@ pub async fn auth_callback(
                         .append_pair("session_id", &session_id);
                     Redirect::to(callback_url.as_str()).into_response()
                 }
-                Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+                Err(err) => {
+                    tracing::error!("Failed to create session: {err}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Creating session failed.",
+                    )
+                        .into_response();
+                }
             }
         }
         // The code exchange failed. The most common cause is a single-use authorization code that
         // has already been consumed or expired (e.g. a refreshed callback page). Send the user
         // back through login to mint a fresh code rather than stranding them on a dead one.
-        Err(e) => {
-            eprintln!("code exchange failed, restarting login: {e}");
+        Err(err) => {
+            eprintln!("code exchange failed, restarting login: {err}");
             Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
         }
     }
@@ -100,8 +123,7 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     })
 }
 
-/// Clear the session by deleting it from the database. The frontend should
-/// also drop its stored `session_id`.
+/// Logout the session by deleting it from the database.
 pub async fn auth_logout(
     State(state): State<AppState>,
     athlete: crate::session::AuthedAthlete,
@@ -111,6 +133,13 @@ pub async fn auth_logout(
         .await
     {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+        Err(err) => {
+            tracing::error!("Failed to delete session ID: {err}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to delete session ID.",
+            )
+                .into_response()
+        }
     }
 }

@@ -9,7 +9,6 @@ use geojson::{Feature, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
 use serde::de::DeserializeOwned;
-use web_sys::RequestCredentials;
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
@@ -45,13 +44,11 @@ async fn fetch_json<T: DeserializeOwned>(
     url: &str,
     error_name: &str,
 ) -> Result<(Vec<T>, CompleteDownload), LoadError> {
-    let session_id = match session::get_session_id() {
-        Some(session_id) => session_id,
+    let request = match session::authed(Request::get(url)) {
+        Some(request) => request,
         None => return Ok((Vec::new(), CompleteDownload::Yes)),
     };
-    let resp = Request::get(url)
-        .header("Authorization", &format!("Bearer {session_id}"))
-        .credentials(RequestCredentials::Include)
+    let resp = request
         .send()
         .await
         .map_err(|e| LoadError::Other(format!("{error_name} request failed: {e}")))?;

@@ -1,7 +1,7 @@
 use axum::{
     Router,
     http::{HeaderValue, Method, header},
-    routing::get,
+    routing::{get, post},
 };
 use sea_orm::DatabaseConnection;
 use std::time::Duration;
@@ -52,7 +52,7 @@ async fn main() {
         .unicode_serialization();
     let cors = CorsLayer::new()
         .allow_origin(frontend_base_url.parse::<HeaderValue>().unwrap())
-        .allow_methods([Method::GET])
+        .allow_methods([Method::GET, Method::POST])
         .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
         .expose_headers([header::CONTENT_DISPOSITION])
         .allow_credentials(true)
@@ -60,7 +60,7 @@ async fn main() {
     let app = Router::new()
         .route("/auth/login", get(routes::strava::auth_login))
         .route("/auth/callback", get(routes::strava::auth_callback))
-        .route("/auth/logout", get(routes::strava::auth_logout))
+        .route("/auth/logout", post(routes::strava::auth_logout))
         .route("/api/runs", get(routes::runs::get_runs))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

@@ -48,6 +48,45 @@ async fn snap_line(encoded_coords: &str) -> Result<String, String> {
         .map_err(|err| format!("Failed to encode polyline: {err}"))
 }
 
+/// Return a currently-valid Strava access token for `athlete_id`.
+///
+/// Strava access tokens expire after ~6 hours. If the stored one has expired (or
+/// is about to) refresh it using the stored refresh token.
+async fn valid_access_token(
+    database: &DatabaseConnection,
+    athlete_id: i64,
+) -> Result<String, String> {
+    let athlete = match models::athlete::Entity::find_by_id(athlete_id)
+        .one(database)
+        .await
+    {
+        Ok(Some(athlete)) => athlete,
+        Ok(None) => return Err("Cannot find athlete for given session ID.".to_string()),
+        Err(err) => return Err(format!("Error while finding athlete: {err}")),
+    };
+
+    // Refresh slightly ahead of the expiry to avoid racing it.
+    const EXPIRY_BUFFER_SECS: i64 = 60;
+    if athlete.expires_at > Utc::now().timestamp() + EXPIRY_BUFFER_SECS {
+        return Ok(athlete.access_token);
+    }
+
+    tracing::info!("Refreshing Strava access token for athlete ID: {athlete_id}");
+    let tokens = services::strava::refresh_access_token(&athlete.refresh_token).await?;
+
+    let access_token = tokens.access_token.clone();
+    let mut athlete_active: models::athlete::ActiveModel = athlete.into();
+    athlete_active.access_token = Set(tokens.access_token);
+    athlete_active.refresh_token = Set(tokens.refresh_token);
+    athlete_active.expires_at = Set(tokens.expires_at);
+    athlete_active
+        .update(database)
+        .await
+        .map_err(|err| format!("Failed to store refreshed tokens: {err}"))?;
+
+    Ok(access_token)
+}
+
 /// Start fetching older runs before a given time.
 ///
 /// If no time is given then all runs will be fetched.
@@ -56,14 +95,7 @@ async fn fetch_older_runs(
     athlete_id: i64,
     mut before_epoch: Option<DateTime<Utc>>,
 ) -> Result<(), String> {
-    let access_token = match models::athlete::Entity::find_by_id(athlete_id)
-        .one(database)
-        .await
-    {
-        Ok(Some(athlete)) => athlete.access_token,
-        Ok(None) => return Err("Cannot find athlete for given session ID.".to_string()),
-        Err(err) => return Err(format!("Error while finding athlete: {err}")),
-    };
+    let access_token = valid_access_token(database, athlete_id).await?;
     tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
 
     let mut current_wait = START_WAIT;

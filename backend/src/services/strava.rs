@@ -101,7 +101,10 @@ fn http_client() -> oauth2::reqwest::Client {
 pub fn authorize_url() -> (Url, CsrfToken) {
     oauth_client()
         .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new("activity:read_all".to_string()))
+        // The read_all scope gives access to all activities (https://developers.strava.com/docs/authentication/).
+        // The 'read' scope is necessary to avoid the user needing to re-authorise the app every
+        // time they log in (https://communityhub.strava.com/developers-api-7/strava-oauth-approval-prompt-1604).
+        .add_scope(Scope::new("read,activity:read_all".to_string()))
         .url()
 }
 
@@ -117,7 +120,6 @@ pub async fn exchange_code(code: &str) -> Result<StravaTokens, String> {
 }
 
 /// Refresh one user's expired access token using their stored refresh token.
-#[allow(dead_code)]
 pub async fn refresh_access_token(refresh_token: &str) -> Result<StravaTokens, String> {
     let token = oauth_client()
         .exchange_refresh_token(&RefreshToken::new(refresh_token.to_string()))
