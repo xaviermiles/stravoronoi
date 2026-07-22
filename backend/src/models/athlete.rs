@@ -8,6 +8,8 @@ pub struct Model {
     #[sea_orm(primary_key)]
     pub strava_id: i64,
     pub strava_username: Option<String>,
+    /// URL to a 124x124 pixel profile picture.
+    pub profile_url: String,
     pub access_token: String,
     pub refresh_token: String,
     /// Unix timestamp (seconds) at which `access_token` expires.
