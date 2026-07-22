@@ -16,6 +16,11 @@ async fn logout() {
         log::error!("Error while logging out: {err}");
     }
     session::delete_session_id();
+    web_sys::window()
+        .unwrap()
+        .location()
+        .reload()
+        .unwrap();
 }
 
 #[function_component]
