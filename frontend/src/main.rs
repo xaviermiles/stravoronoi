@@ -34,7 +34,8 @@ fn SessionId(props: &SessionIdProps) -> Html {
         }) => {
             session::set_session_id(session_id);
             props.on_login.emit(());
-            history.replace("/");
+            // Replace with the current path to drop the query string.
+            history.replace(history.location().path());
         }
         Ok(CallbackQuery { session_id: None }) => {
             // No session id in the URL (normal page load) — nothing to do.
@@ -71,6 +72,6 @@ fn app() -> Html {
 }
 
 fn main() {
-    wasm_logger::init(wasm_logger::Config::default());
+    wasm_logger::init(wasm_logger::Config::new(log::Level::Info));
     yew::Renderer::<App>::new().render();
 }
