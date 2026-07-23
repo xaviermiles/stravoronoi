@@ -49,24 +49,14 @@ fn SessionId(props: &SessionIdProps) -> Html {
 
 #[function_component(App)]
 fn app() -> Html {
-    let logged_in = use_state(session::is_logged_in);
-
-    let on_unauthorized = {
-        let logged_in = logged_in.clone();
-        Callback::from(move |_| logged_in.set(false))
-    };
-    let on_login = {
-        let logged_in = logged_in.clone();
-        Callback::from(move |_| logged_in.set(true))
-    };
-
-    let _map = map::use_map(on_unauthorized);
+    let auth = session::use_auth();
+    let _map = map::use_map(auth.on_unauthorized.clone());
 
     html! {
       <div id="container">
         <div id="map" style="width: 100vw; height: 100vh;"></div>
-        <LoginButton logged_in={*logged_in} />
-        <SessionId {on_login} />
+        <LoginButton logged_in={auth.logged_in} profile_url={auth.profile_url.clone()} />
+        <SessionId on_login={auth.on_login.clone()} />
       </div>
     }
 }

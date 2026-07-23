@@ -2,3 +2,32 @@
 .mapbox-improve-map {
     display: none;
 }
+
+/* Login/logout button styled to look similar to the login button on the strava website. */
+button {
+    position: absolute;
+    display: block;
+    top: 10px;
+    min-height: 40px;
+    padding: 6px 16px;
+    right: 10px;
+    z-index: 1;
+    border: 1px solid white;
+    font-weight: 600; 
+    background-color: white; 
+    font-size: 14px; 
+    border-radius: 4px; 
+    font-family: "Boathouse,Segoe UI,Helvetica Neue,-apple-system,system-ui,BlinkMacSystemFont,Roboto,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol;"
+}
+
+/* Profile picture shown when logged in. */
+#user-icon {
+    position: absolute;
+    top: 10px;
+    right: 100px;
+    z-index: 1;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    object-fit: cover;
+}
