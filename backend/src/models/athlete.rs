@@ -7,7 +7,8 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub strava_id: i64,
-    pub strava_username: Option<String>,
+    /// Athlete username, from their first and last name.
+    pub username: String,
     /// URL to a 124x124 pixel profile picture.
     pub profile_url: String,
     pub access_token: String,

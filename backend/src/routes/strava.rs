@@ -77,7 +77,7 @@ pub async fn auth_callback(
                     // Overwrite the stored tokens otherwise they'd be stuck on stale credentials
                     // as Strava rotates the refresh token on each refresh.
                     let mut user: models::athlete::ActiveModel = existing.into();
-                    user.strava_username = Set(tokens.athlete.username);
+                    user.username = Set(strava_athlete.get_username());
                     user.profile_url = Set(strava_athlete.profile);
                     user.access_token = Set(tokens.access_token.to_owned());
                     user.refresh_token = Set(tokens.refresh_token.to_owned());
@@ -87,7 +87,7 @@ pub async fn auth_callback(
                 None => {
                     let user = models::athlete::ActiveModel {
                         strava_id: Set(athlete_id),
-                        strava_username: Set(tokens.athlete.username),
+                        username: Set(strava_athlete.get_username()),
                         profile_url: Set(strava_athlete.profile),
                         access_token: Set(tokens.access_token.to_owned()),
                         refresh_token: Set(tokens.refresh_token.to_owned()),
@@ -170,7 +170,7 @@ pub async fn get_me(
         .await
     {
         Ok(Some(athlete)) => Json(comms::athlete::AthleteResponse {
-            username: athlete.strava_username,
+            username: athlete.username,
             profile_url: athlete.profile_url,
         })
         .into_response(),

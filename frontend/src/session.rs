@@ -43,7 +43,7 @@ pub fn authed(builder: RequestBuilder) -> Option<RequestBuilder> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
-    pub username: Option<AttrValue>,
+    pub username: AttrValue,
     pub img_url: AttrValue,
 }
 
@@ -84,9 +84,7 @@ pub fn use_auth() -> Auth {
                     wasm_bindgen_futures::spawn_local(async move {
                         match crate::strava::load_profile().await {
                             Ok(athlete) => profile.set(Some(Profile {
-                                username: athlete
-                                    .username
-                                    .map(|username| AttrValue::from(username)),
+                                username: AttrValue::from(athlete.username),
                                 img_url: AttrValue::from(athlete.profile_url),
                             })),
                             Err(crate::strava::LoadError::Unauthorized) => logged_in.set(false),

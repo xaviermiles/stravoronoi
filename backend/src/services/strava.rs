@@ -62,7 +62,6 @@ type StravaClient<HasAuthUrl = EndpointNotSet, HasTokenUrl = EndpointNotSet> = C
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StravaAthlete {
     pub id: i64,
-    pub username: Option<String>,
 }
 /// The subset of Strava's token response that we care about.
 pub struct StravaTokens {
@@ -331,8 +330,18 @@ pub async fn fetch_activities(
 /// https://developers.strava.com/docs/reference/#api-models-DetailedAthlete
 #[derive(Debug, Deserialize)]
 pub struct DetailedAthlete {
+    /// The athlete's first name.
+    firstname: String,
+    /// The athlete's last name.
+    lastname: String,
     /// URL to a 124x124 pixel profile picture.
     pub profile: String,
+}
+
+impl DetailedAthlete {
+    pub fn get_username(&self) -> String {
+        format!("{} {}", self.firstname, self.lastname)
+    }
 }
 
 /// Fetch the detailed information for an athlete.
