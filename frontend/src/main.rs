@@ -55,7 +55,7 @@ fn app() -> Html {
     html! {
       <div id="container">
         <div id="map" style="width: 100vw; height: 100vh;"></div>
-        <LoginButton logged_in={auth.logged_in} profile_url={auth.profile_url.clone()} />
+        <LoginButton logged_in={auth.logged_in} profile={auth.profile.clone()} />
         <SessionId on_login={auth.on_login.clone()} />
       </div>
     }

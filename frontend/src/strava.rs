@@ -149,9 +149,10 @@ pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns,
 }
 
 /// Fetch the authenticated athlete's profile picture URL from the backend.
-pub async fn load_profile_url() -> Result<String, LoadError> {
+pub async fn load_profile() -> Result<comms::athlete::AthleteResponse, LoadError> {
     let url = format!("{BACKEND_BASE_URL}/api/me");
-    let request = session::authed(Request::get(&url)).expect("should only be called when logged in");
+    let request =
+        session::authed(Request::get(&url)).expect("should only be called when logged in");
     let resp = request
         .send()
         .await
@@ -168,9 +169,7 @@ pub async fn load_profile_url() -> Result<String, LoadError> {
         )));
     }
 
-    let athlete: comms::athlete::AthleteResponse = resp
-        .json()
+    resp.json()
         .await
-        .map_err(|e| LoadError::Other(format!("Failed to parse profile: {e}")))?;
-    Ok(athlete.profile_url)
+        .map_err(|err| LoadError::Other(format!("Failed to parse profile: {err}")))
 }

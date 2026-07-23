@@ -1,3 +1,4 @@
+use crate::session::Profile;
 use crate::{BACKEND_BASE_URL, session};
 use gloo_net::http::Request;
 use yew::prelude::*;
@@ -5,9 +6,9 @@ use yew::prelude::*;
 #[derive(Properties, PartialEq)]
 pub struct LoginButtonProps {
     pub logged_in: bool,
-    /// The athlete's profile picture URL. Only populated when logged in.
-    #[prop_or_default]
-    pub profile_url: Option<AttrValue>,
+    /// The athlete's profile information. Only populated when logged in.
+    #[prop_or(None)]
+    pub profile: Option<Profile>,
 }
 
 async fn logout() {
@@ -39,13 +40,18 @@ pub fn LoginButton(props: &LoginButtonProps) -> Html {
                 .unwrap();
         })
     };
+
     html! {
         <div>
             <button data-key="log-in" onclick={onclick}>
                 {button_text}
             </button>
-            if let Some(url) = &props.profile_url {
-                <img id="user-icon" src={url.clone()} alt="Profile picture" />
+            if let Some(profile) = &props.profile {
+                <img
+                id="user-icon"
+                src={profile.img_url.clone()}
+                title={profile.username.clone()}
+                alt="Profile picture" />
             }
         </div>
     }

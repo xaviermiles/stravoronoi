@@ -170,6 +170,7 @@ pub async fn get_me(
         .await
     {
         Ok(Some(athlete)) => Json(comms::athlete::AthleteResponse {
+            username: athlete.strava_username,
             profile_url: athlete.profile_url,
         })
         .into_response(),
