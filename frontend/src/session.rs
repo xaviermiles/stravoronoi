@@ -1,5 +1,8 @@
+use gloo_history::BrowserHistory;
+use gloo_history::History;
 use gloo_net::http::RequestBuilder;
 use gloo_storage::{LocalStorage, Storage, errors::StorageError};
+use serde::Deserialize;
 use web_sys::RequestCredentials;
 use yew::prelude::*;
 
@@ -51,13 +54,11 @@ pub struct Profile {
 pub struct Auth {
     pub logged_in: bool,
     pub profile: Option<Profile>,
-    /// Call once a session ID has been stored (e.g. after the OAuth callback).
-    pub on_login: Callback<()>,
     /// Call when a request comes back unauthorised, to drop back to logged-out.
     pub on_unauthorized: Callback<()>,
 }
 
-/// Track the athlete's login state and fetch their profile picture URL from the
+/// Track the athlete's login state and fetch their profile from the
 /// backend whenever they are logged in.
 #[hook]
 pub fn use_auth() -> Auth {
@@ -72,6 +73,8 @@ pub fn use_auth() -> Auth {
         let logged_in = logged_in.clone();
         Callback::from(move |_| logged_in.set(true))
     };
+
+    use_session_callback(on_login);
 
     // Fetch the profile picture URL from the backend whenever we become logged in.
     {
@@ -105,7 +108,31 @@ pub fn use_auth() -> Auth {
     Auth {
         logged_in: *logged_in,
         profile: (*profile).clone(),
-        on_login,
         on_unauthorized,
     }
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    session_id: Option<String>,
+}
+
+/// Handle the oauth callback (session ID in the URL).
+#[hook]
+fn use_session_callback(on_login: Callback<()>) {
+    use_effect_with_deps(
+        move |_| {
+            let history = BrowserHistory::new();
+            if let Ok(CallbackQuery {
+                session_id: Some(id),
+            }) = history.location().query::<CallbackQuery>()
+            {
+                set_session_id(id);
+                on_login.emit(());
+                history.replace(history.location().path());
+            }
+            || ()
+        },
+        (),
+    );
 }
