@@ -2,6 +2,7 @@ use crate::models;
 use crate::services;
 use crate::{AppState, BACKEND_BASE_URL, FRONTEND_URL};
 use axum::{
+    Json,
     body::Body,
     extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
@@ -54,31 +55,46 @@ pub async fn auth_callback(
     match services::strava::exchange_code(&params.code).await {
         Ok(tokens) => {
             let athlete_id = tokens.athlete.id;
-            let upsert = match models::athlete::Entity::find_by_id(athlete_id)
+            let existing_athlete = match models::athlete::Entity::find_by_id(athlete_id)
                 .one(&state.database)
                 .await
             {
-                Ok(Some(existing)) => {
+                Ok(existing_athlete) => existing_athlete,
+                Err(err) => {
+                    tracing::error!("Failed to search for athlete: {err}");
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Find failed.").into_response();
+                }
+            };
+            // Fetch the profile picture for existing users so that it gets updated if they've
+            // changed it in Strava.
+            let Ok(strava_athlete) = services::strava::get_athlete(&tokens.access_token).await
+            else {
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Getting athlete failed.")
+                    .into_response();
+            };
+            let upsert = match existing_athlete {
+                Some(existing) => {
                     // Overwrite the stored tokens otherwise they'd be stuck on stale credentials
                     // as Strava rotates the refresh token on each refresh.
                     let mut user: models::athlete::ActiveModel = existing.into();
-                    user.strava_username = Set(tokens.athlete.username);
+                    user.username = Set(strava_athlete.get_username());
+                    user.profile_url = Set(strava_athlete.profile);
                     user.access_token = Set(tokens.access_token.to_owned());
                     user.refresh_token = Set(tokens.refresh_token.to_owned());
                     user.expires_at = Set(tokens.expires_at.to_owned());
                     user.update(&state.database).await
                 }
-                Ok(None) => {
+                None => {
                     let user = models::athlete::ActiveModel {
                         strava_id: Set(athlete_id),
-                        strava_username: Set(tokens.athlete.username),
+                        username: Set(strava_athlete.get_username()),
+                        profile_url: Set(strava_athlete.profile),
                         access_token: Set(tokens.access_token.to_owned()),
                         refresh_token: Set(tokens.refresh_token.to_owned()),
                         expires_at: Set(tokens.expires_at.to_owned()),
                     };
                     user.insert(&state.database).await
                 }
-                Err(err) => Err(err),
             };
             if let Err(err) = upsert {
                 tracing::error!("Failed to upsert athlete: {err}");
@@ -108,7 +124,7 @@ pub async fn auth_callback(
         // has already been consumed or expired (e.g. a refreshed callback page). Send the user
         // back through login to mint a fresh code rather than stranding them on a dead one.
         Err(err) => {
-            eprintln!("code exchange failed, restarting login: {err}");
+            tracing::error!("code exchange failed, restarting login: {err}");
             Redirect::to(&format!("{BACKEND_BASE_URL}/auth/login")).into_response()
         }
     }
@@ -140,6 +156,28 @@ pub async fn auth_logout(
                 "Failed to delete session ID.",
             )
                 .into_response()
+        }
+    }
+}
+
+/// Return the authenticated athlete's profile information.
+pub async fn get_me(
+    State(state): State<AppState>,
+    athlete: crate::session::AuthedAthlete,
+) -> Response {
+    match models::athlete::Entity::find_by_id(athlete.athlete_id)
+        .one(&state.database)
+        .await
+    {
+        Ok(Some(athlete)) => Json(comms::athlete::AthleteResponse {
+            username: athlete.username,
+            profile_url: athlete.profile_url,
+        })
+        .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, "Athlete not found.").into_response(),
+        Err(err) => {
+            tracing::error!("Failed to load athlete: {err}");
+            (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load athlete.").into_response()
         }
     }
 }

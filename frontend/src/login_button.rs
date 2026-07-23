@@ -1,3 +1,4 @@
+use crate::session::Profile;
 use crate::{BACKEND_BASE_URL, session};
 use gloo_net::http::Request;
 use yew::prelude::*;
@@ -5,6 +6,9 @@ use yew::prelude::*;
 #[derive(Properties, PartialEq)]
 pub struct LoginButtonProps {
     pub logged_in: bool,
+    /// The athlete's profile information. Only populated when logged in.
+    #[prop_or(None)]
+    pub profile: Option<Profile>,
 }
 
 async fn logout() {
@@ -16,11 +20,7 @@ async fn logout() {
         log::error!("Error while logging out: {err}");
     }
     session::delete_session_id();
-    web_sys::window()
-        .unwrap()
-        .location()
-        .reload()
-        .unwrap();
+    web_sys::window().unwrap().location().reload().unwrap();
 }
 
 #[function_component]
@@ -40,12 +40,19 @@ pub fn LoginButton(props: &LoginButtonProps) -> Html {
                 .unwrap();
         })
     };
+
     html! {
-        <button
-            data-key="log-in"
-            style="position: absolute; top: 10px; min-height: 40px; padding: 6px 16px; right: 10px; z-index: 1; border: 1px solid white; font-weight: 600; background-color: white; font-size: 14px; border-radius: 4px; font-family: \"Boathouse,Segoe UI,Helvetica Neue,-apple-system,system-ui,BlinkMacSystemFont,Roboto,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol;\""
-            onclick={onclick}>
-            {button_text}
-        </button>
+        <div>
+            <button data-key="log-in" onclick={onclick}>
+                {button_text}
+            </button>
+            if let Some(profile) = &props.profile {
+                <img
+                id="user-icon"
+                src={profile.img_url.clone()}
+                title={profile.username.clone()}
+                alt="Profile picture" />
+            }
+        </div>
     }
 }

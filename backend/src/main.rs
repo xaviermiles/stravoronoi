@@ -61,6 +61,7 @@ async fn main() {
         .route("/auth/login", get(routes::strava::auth_login))
         .route("/auth/callback", get(routes::strava::auth_callback))
         .route("/auth/logout", post(routes::strava::auth_logout))
+        .route("/api/me", get(routes::strava::get_me))
         .route("/api/runs", get(routes::runs::get_runs))
         .with_state(state)
         .layer(TraceLayer::new_for_http())

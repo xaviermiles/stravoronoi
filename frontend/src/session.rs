@@ -1,6 +1,10 @@
+use gloo_history::BrowserHistory;
+use gloo_history::History;
 use gloo_net::http::RequestBuilder;
 use gloo_storage::{LocalStorage, Storage, errors::StorageError};
+use serde::Deserialize;
 use web_sys::RequestCredentials;
+use yew::prelude::*;
 
 const SESSION_ID_KEY: &str = "session_id";
 
@@ -26,7 +30,7 @@ pub fn delete_session_id() {
     LocalStorage::delete(SESSION_ID_KEY)
 }
 
-pub fn is_logged_in() -> bool {
+fn is_logged_in() -> bool {
     LocalStorage::get::<String>(SESSION_ID_KEY).is_ok()
 }
 
@@ -38,4 +42,97 @@ pub fn authed(builder: RequestBuilder) -> Option<RequestBuilder> {
             .header("Authorization", &format!("Bearer {session_id}"))
             .credentials(RequestCredentials::Include),
     )
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Profile {
+    pub username: AttrValue,
+    pub img_url: AttrValue,
+}
+
+/// The authentication state, plus callbacks to update it.
+pub struct Auth {
+    pub logged_in: bool,
+    pub profile: Option<Profile>,
+    /// Call when a request comes back unauthorised, to drop back to logged-out.
+    pub on_unauthorized: Callback<()>,
+}
+
+/// Track the athlete's login state and fetch their profile from the
+/// backend whenever they are logged in.
+#[hook]
+pub fn use_auth() -> Auth {
+    let logged_in = use_state(is_logged_in);
+    let profile = use_state(|| None::<Profile>);
+
+    let on_unauthorized = {
+        let logged_in = logged_in.clone();
+        Callback::from(move |_| logged_in.set(false))
+    };
+    let on_login = {
+        let logged_in = logged_in.clone();
+        Callback::from(move |_| logged_in.set(true))
+    };
+
+    use_session_callback(on_login);
+
+    // Fetch the profile picture URL from the backend whenever we become logged in.
+    {
+        let profile = profile.clone();
+        let logged_in = logged_in.clone();
+        let is_logged_in = *logged_in;
+        use_effect_with_deps(
+            move |&is_logged_in| {
+                if is_logged_in {
+                    wasm_bindgen_futures::spawn_local(async move {
+                        match crate::strava::load_profile().await {
+                            Ok(athlete) => profile.set(Some(Profile {
+                                username: AttrValue::from(athlete.username),
+                                img_url: AttrValue::from(athlete.profile_url),
+                            })),
+                            Err(crate::strava::LoadError::Unauthorized) => logged_in.set(false),
+                            Err(crate::strava::LoadError::Other(err)) => {
+                                log::error!("Failed to load profile URL: {err}")
+                            }
+                        }
+                    });
+                } else {
+                    profile.set(None);
+                }
+                || ()
+            },
+            is_logged_in,
+        );
+    }
+
+    Auth {
+        logged_in: *logged_in,
+        profile: (*profile).clone(),
+        on_unauthorized,
+    }
+}
+
+#[derive(Deserialize)]
+struct CallbackQuery {
+    session_id: Option<String>,
+}
+
+/// Handle the oauth callback (session ID in the URL).
+#[hook]
+fn use_session_callback(on_login: Callback<()>) {
+    use_effect_with_deps(
+        move |_| {
+            let history = BrowserHistory::new();
+            if let Ok(CallbackQuery {
+                session_id: Some(id),
+            }) = history.location().query::<CallbackQuery>()
+            {
+                set_session_id(id);
+                on_login.emit(());
+                history.replace(history.location().path());
+            }
+            || ()
+        },
+        (),
+    );
 }

@@ -25,6 +25,8 @@ use std::fmt;
 
 const AUTHORIZE_URL: &str = "https://www.strava.com/oauth/authorize";
 const TOKEN_URL: &str = "https://www.strava.com/oauth/token";
+/// URL to get an authenticated athlete.
+const ATHLETE_URL: &str = "https://www.strava.com/api/v3/athlete";
 /// URL to fetch activities for a given athelete.
 const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 
@@ -60,7 +62,6 @@ type StravaClient<HasAuthUrl = EndpointNotSet, HasTokenUrl = EndpointNotSet> = C
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StravaAthlete {
     pub id: i64,
-    pub username: Option<String>,
 }
 /// The subset of Strava's token response that we care about.
 pub struct StravaTokens {
@@ -303,6 +304,7 @@ impl SummaryActivity {
     }
 }
 
+#[derive(Debug)]
 pub enum FetchError {
     Backoff,
     Other(String),
@@ -311,6 +313,8 @@ pub enum FetchError {
 /// Fetch the most recent activities for the authenticated athlete.
 ///
 /// before_epoch: An epoch timestamp to use for filtering activities that have taken place before a certain time.
+///
+/// https://developers.strava.com/docs/reference/#api-Activities-getLoggedInAthleteActivities
 pub async fn fetch_activities(
     access_token: &str,
     before_epoch: Option<DateTime<Utc>>,
@@ -320,6 +324,39 @@ pub async fn fetch_activities(
         None => ACTIVITIES_URL.to_string(),
     };
 
+    get_strava_api(&url, &access_token, "activities").await
+}
+
+/// https://developers.strava.com/docs/reference/#api-models-DetailedAthlete
+#[derive(Debug, Deserialize)]
+pub struct DetailedAthlete {
+    /// The athlete's first name.
+    firstname: String,
+    /// The athlete's last name.
+    lastname: String,
+    /// URL to a 124x124 pixel profile picture.
+    pub profile: String,
+}
+
+impl DetailedAthlete {
+    pub fn get_username(&self) -> String {
+        format!("{} {}", self.firstname, self.lastname)
+    }
+}
+
+/// Fetch the detailed information for an athlete.
+///
+/// https://developers.strava.com/docs/reference/#api-Athletes-getLoggedInAthlete
+pub async fn get_athlete(access_token: &str) -> Result<DetailedAthlete, FetchError> {
+    get_strava_api(ATHLETE_URL, access_token, "authenticated athlete").await
+}
+
+/// Generic for v3 GET APIs https://developers.strava.com/docs/reference
+async fn get_strava_api<T: for<'a> Deserialize<'a>>(
+    url: &str,
+    access_token: &str,
+    error_name: &str,
+) -> Result<T, FetchError> {
     let client = reqwest::Client::new();
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -327,11 +364,11 @@ pub async fn fetch_activities(
         HeaderValue::from_str(&format!("Bearer {access_token}")).unwrap(),
     );
     let response = client
-        .get(&url)
+        .get(url)
         .headers(headers)
         .send()
         .await
-        .map_err(|err| FetchError::Other(format!("Failed to get activities: {err:?}")))?;
+        .map_err(|err| FetchError::Other(format!("Failed to get {error_name}: {err:?}")))?;
     if !response.status().is_success() {
         let fault = response
             .json::<Fault>()
@@ -341,7 +378,7 @@ pub async fn fetch_activities(
         return Err(FetchError::Backoff);
     }
     response
-        .json::<Vec<SummaryActivity>>()
+        .json::<T>()
         .await
-        .map_err(|err| FetchError::Other(format!("Failed to parse activities: {err:?}")))
+        .map_err(|err| FetchError::Other(format!("Failed to parse {error_name}: {err:?}")))
 }
