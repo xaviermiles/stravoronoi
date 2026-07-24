@@ -324,7 +324,7 @@ pub async fn fetch_activities(
         None => ACTIVITIES_URL.to_string(),
     };
 
-    get_strava_api(&url, &access_token, "activities").await
+    get_strava_api(&url, access_token, "activities").await
 }
 
 /// https://developers.strava.com/docs/reference/#api-models-DetailedAthlete
