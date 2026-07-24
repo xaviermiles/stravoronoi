@@ -1,6 +1,9 @@
+use geojson::feature::Id;
+use geojson::{Feature, FeatureCollection, Geometry, PointType, Value};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::hash::Hash;
 use std::io::Write;
 
 const CACHE_FILE: &str = "road-grid/christchurch_highways.json";
@@ -28,64 +31,6 @@ struct RoadMeta {
     node_ids: Vec<u64>,
     name: Option<String>,
     ref_code: Option<String>,
-}
-
-// Minimal structures to output standard GeoJSON
-#[derive(Serialize)]
-struct GeoJsonFeatureCollection {
-    #[serde(rename = "type")]
-    type_field: String,
-    features: Vec<GeoJsonFeature>,
-}
-
-#[derive(Serialize)]
-struct GeoJsonFeature {
-    #[serde(rename = "type")]
-    type_field: String,
-    geometry: GeoJsonGeometry,
-    properties: GeoJsonProperties,
-}
-
-#[derive(Serialize)]
-struct GeoJsonGeometry {
-    #[serde(rename = "type")]
-    type_field: String,
-    coordinates: [f64; 2], // [longitude, latitude]
-}
-
-#[derive(Serialize)]
-struct GeoJsonProperties {
-    node_id: u64,
-    connected_ways: usize,
-}
-
-#[derive(Serialize)]
-struct GeoJsonLineGeometry {
-    #[serde(rename = "type")]
-    type_field: String,
-    coordinates: Vec<[f64; 2]>, // [[longitude, latitude], ...]
-}
-
-#[derive(Serialize)]
-struct GeoJsonLineProperties {
-    way_id: u64,
-    name: Option<String>,
-    ref_code: Option<String>,
-}
-
-#[derive(Serialize)]
-struct GeoJsonLineFeature {
-    #[serde(rename = "type")]
-    type_field: String,
-    geometry: GeoJsonLineGeometry,
-    properties: GeoJsonLineProperties,
-}
-
-#[derive(Serialize)]
-struct GeoJsonLineFeatureCollection {
-    #[serde(rename = "type")]
-    type_field: String,
-    features: Vec<GeoJsonLineFeature>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -127,7 +72,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Expand ways into their coordinates and export as GeoJSON LineStrings.
-    let ways_features: Vec<GeoJsonLineFeature> = way_metadata
+    let ways_features: Vec<Feature> = way_metadata
         .iter()
         .map(|(id, meta)| {
             let coordinates: Vec<[f64; 2]> = meta
@@ -137,12 +82,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // GeoJSON uses [longitude, latitude] order
                 .map(|&(lat, lon)| [lon, lat])
                 .collect();
-            GeoJsonLineFeature {
-                type_field: "Feature".to_string(),
-                geometry: GeoJsonLineGeometry {
-                    type_field: "LineString".to_string(),
-                    coordinates,
-                },
+            Feature {
+                id: Some((*id).into()),
+                geometry: LineString { coordinates },
                 properties: GeoJsonLineProperties {
                     way_id: *id,
                     name: meta.name.clone(),
@@ -151,9 +93,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
         .collect();
-    let ways_collection = GeoJsonLineFeatureCollection {
-        type_field: "FeatureCollection".to_string(),
+    let ways_collection = FeatureCollection {
+        bbox: None,
         features: ways_features,
+        foreign_members: None,
     };
     let ways_file = File::create("christchurch_ways.geojson")?;
     serde_json::to_writer_pretty(ways_file, &ways_collection)?;
@@ -197,26 +140,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if is_true_intersection {
             if let Some(&(lat, lon)) = nodes_geo.get(&node_id) {
-                features.push(GeoJsonFeature {
-                    type_field: "Feature".to_string(),
-                    geometry: GeoJsonGeometry {
-                        type_field: "Point".to_string(),
-                        // GeoJSON uses [longitude, latitude] order
-                        coordinates: [lon, lat],
-                    },
-                    properties: GeoJsonProperties {
-                        node_id,
-                        connected_ways: way_ids.len(),
-                    },
+                // let mut properties = HashMap::new();
+                // properties.insert("node_id", node_id);
+                // properties.insert("connected_ways", way_ids.len());
+
+                let mut properties = serde_json::Map::new();
+                properties.insert(
+                    "node_id"
+                    serde_json::Value::String(node_id),
+                );
+                properties.insert("connected_ways", way_ids.len());
+                features.push(Feature {
+                    geometry: Some(Geometry::new(Value::Point(vec![lon, lat]))),
+                    properties: Some(properties),
                 });
             }
         }
     }
 
-    // 4. Construct and save the final GeoJSON output
-    let output_collection = GeoJsonFeatureCollection {
-        type_field: "FeatureCollection".to_string(),
+    // Construct and save the final GeoJSON output
+    let output_collection = FeatureCollection {
+        bbox: None,
         features,
+        foreign_members: None,
     };
 
     println!(
