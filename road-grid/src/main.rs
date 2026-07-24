@@ -1,9 +1,8 @@
 use geojson::feature::Id;
-use geojson::{Feature, FeatureCollection, Geometry, PointType, Value};
-use serde::{Deserialize, Serialize};
+use geojson::{Feature, FeatureCollection, Geometry, Value};
+use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::hash::Hash;
 use std::io::Write;
 
 const CACHE_FILE: &str = "road-grid/christchurch_highways.json";
@@ -53,10 +52,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let tags = tags.unwrap_or_default();
                 let name = tags.get("name").cloned();
                 let ref_code = tags.get("ref").cloned();
-
-                // TODO: lazy clone?
-                for node_id in nodes.clone() {
-                    node_to_ways.entry(node_id).or_default().push(id);
+                for node_id in nodes.iter() {
+                    node_to_ways.entry(*node_id).or_default().push(id);
                 }
 
                 way_metadata.insert(
@@ -75,21 +72,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ways_features: Vec<Feature> = way_metadata
         .iter()
         .map(|(id, meta)| {
-            let coordinates: Vec<[f64; 2]> = meta
+            let coordinates: Vec<_> = meta
                 .node_ids
                 .iter()
                 .filter_map(|node_id| nodes_geo.get(node_id))
                 // GeoJSON uses [longitude, latitude] order
-                .map(|&(lat, lon)| [lon, lat])
+                .map(|&(lat, lon)| vec![lon, lat])
                 .collect();
+            let mut properties = serde_json::Map::new();
+            properties.insert("way_id".into(), (*id).into());
+            properties.insert("name".into(), meta.name.to_owned().into());
+            properties.insert("ref_code".into(), meta.ref_code.to_owned().into());
             Feature {
-                id: Some((*id).into()),
-                geometry: LineString { coordinates },
-                properties: GeoJsonLineProperties {
-                    way_id: *id,
-                    name: meta.name.clone(),
-                    ref_code: meta.ref_code.clone(),
-                },
+                id: Some(Id::Number((*id).into())),
+                geometry: Some(Geometry::new(Value::LineString(coordinates))),
+                properties: Some(properties),
+                ..Default::default()
             }
         })
         .collect();
@@ -138,23 +136,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             || (unnamed_count > 0 && !unique_names.is_empty())
             || (unnamed_count > 1 && way_ids.len() > unnamed_count);
 
-        if is_true_intersection {
-            if let Some(&(lat, lon)) = nodes_geo.get(&node_id) {
-                // let mut properties = HashMap::new();
-                // properties.insert("node_id", node_id);
-                // properties.insert("connected_ways", way_ids.len());
-
-                let mut properties = serde_json::Map::new();
-                properties.insert(
-                    "node_id"
-                    serde_json::Value::String(node_id),
-                );
-                properties.insert("connected_ways", way_ids.len());
-                features.push(Feature {
-                    geometry: Some(Geometry::new(Value::Point(vec![lon, lat]))),
-                    properties: Some(properties),
-                });
-            }
+        if is_true_intersection && let Some(&(lat, lon)) = nodes_geo.get(&node_id) {
+            let mut properties = serde_json::Map::new();
+            properties.insert("node_id".into(), node_id.into());
+            properties.insert("connected_ways".into(), way_ids.len().into());
+            features.push(Feature {
+                id: Some(Id::Number(node_id.into())),
+                geometry: Some(Geometry::new(Value::Point(vec![lon, lat]))),
+                properties: Some(properties),
+                ..Default::default()
+            });
         }
     }
 
