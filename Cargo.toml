@@ -1,3 +1,3 @@
 [workspace]
-members = ["backend", "comms", "frontend"]
+members = ["backend", "comms", "frontend", "road-grid"]
 resolver = "3"

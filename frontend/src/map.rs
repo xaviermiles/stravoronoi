@@ -1,8 +1,8 @@
 use crate::strava::{self, LoadState};
 use chrono::{DateTime, Utc};
-use geojson::{Feature, GeoJson};
+use geojson::{Feature, FeatureCollection, GeoJson};
 use mapboxgl::Source;
-use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
+use mapboxgl::layer::{CircleLayer, IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
@@ -21,12 +21,23 @@ const RUN_LINE_COLOR: &str = "#fc4c02";
 const SLOW_CONTINUE_TIME: Duration = Duration::from_secs(1);
 const FAST_CONTINUE_TIME: Duration = Duration::from_millis(10);
 
+// TODO: will be moved to backend eventually
+static ALL_GRID_FILE: &str = include_str!("../../christchurch_ways.geojson");
+static INTERSECTION_FILE: &str = include_str!("../../christchurch_intersections.geojson");
+
 struct Listener {
     on_unauthorized: Callback<()>,
 }
 
+// #[derive(Deserialize, Debug)]
+// struct OverpassResponse {
+//     elements: Vec<OsmElement>,
+// }
+
 impl MapEventListener for Listener {
     fn on_load(&mut self, map: Rc<Map>, _e: event::MapBaseEvent) {
+        // Draw the grid lines & intersections for debugging purposes.
+        add_grid_layers(&map);
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -81,6 +92,20 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
             log::error!("failed to add Strava layer: {e:?}");
         }
     }
+}
+
+fn add_grid_layers(map: &Map) {
+    let all_highways: FeatureCollection = ALL_GRID_FILE.parse().unwrap();
+    map.add_geojson_source("all-highways", GeoJson::FeatureCollection(all_highways))
+        .unwrap();
+    let lines = LineLayer::new("all-highways", "all-highways");
+    map.add_layer(lines, None).unwrap();
+
+    let intersections: FeatureCollection = INTERSECTION_FILE.parse().unwrap();
+    map.add_geojson_source("blah", GeoJson::FeatureCollection(intersections))
+        .unwrap();
+    let circles = CircleLayer::new("blah", "blah");
+    map.add_layer(circles, None).unwrap();
 }
 
 fn create_map() -> Rc<Map> {

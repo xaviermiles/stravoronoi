@@ -6,3 +6,8 @@
 *.db
 *.db-shm
 *.db-wal
+
+# TODO: move these data files to a database
+road-grid/christchurch_highways.json
+christchurch_intersections.geojson
+christchurch_ways.geojson
