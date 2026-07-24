@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data: OverpassResponse = serde_json::from_str(&raw_json_data)?;
 
     let mut node_to_ways: HashMap<u64, Vec<u64>> = HashMap::new();
+    let mut node_to_nodes: HashMap<u64, HashSet<u64>> = HashMap::new();
     let mut way_metadata: HashMap<u64, RoadMeta> = HashMap::new();
     let mut nodes_geo: HashMap<u64, (f64, f64)> = HashMap::new();
 
@@ -54,6 +55,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let ref_code = tags.get("ref").cloned();
                 for node_id in nodes.iter() {
                     node_to_ways.entry(*node_id).or_default().push(id);
+                }
+                for (node_id1, node_id2) in nodes.iter().zip(nodes.iter().skip(1)) {
+                    node_to_nodes
+                        .entry(*node_id1)
+                        .or_default()
+                        .insert(*node_id2);
+                    node_to_nodes
+                        .entry(*node_id2)
+                        .or_default()
+                        .insert(*node_id1);
                 }
 
                 way_metadata.insert(
@@ -104,22 +115,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut features = Vec::new();
 
     for (node_id, way_ids) in node_to_ways {
-        // A node must join at least two ways to be considered
-        if way_ids.len() < 2 {
-            continue;
-        }
-
         let mut unique_names = HashSet::new();
         let mut unique_refs = HashSet::new();
-        let mut unnamed_count = 0;
-
         for way_id in &way_ids {
             if let Some(meta) = way_metadata.get(way_id) {
-                match &meta.name {
-                    Some(name) => {
-                        unique_names.insert(name.clone());
-                    }
-                    None => unnamed_count += 1,
+                if let Some(name) = &meta.name {
+                    unique_names.insert(name.clone());
                 }
                 if let Some(ref_code) = &meta.ref_code {
                     unique_refs.insert(ref_code.clone());
@@ -127,18 +128,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Logic check:
-        // - More than 1 distinct name or reference number
-        // - Or a mixture of named segments and completely unnamed roads
-        // - Or multiple distinct unnamed segments intersecting
-        let is_true_intersection = unique_names.len() > 1
-            || unique_refs.len() > 1
-            || (unnamed_count > 0 && !unique_names.is_empty())
-            || (unnamed_count > 1 && way_ids.len() > unnamed_count);
-
-        if is_true_intersection && let Some(&(lat, lon)) = nodes_geo.get(&node_id) {
+        // Nodes that connect to more than two other nodes are considered intersections.
+        if node_to_nodes
+            .get(&node_id)
+            .is_some_and(|other_nodes| other_nodes.len() > 2)
+            && let Some(&(lat, lon)) = nodes_geo.get(&node_id)
+        {
             let mut properties = serde_json::Map::new();
-            properties.insert("node_id".into(), node_id.into());
             properties.insert("connected_ways".into(), way_ids.len().into());
             features.push(Feature {
                 id: Some(Id::Number(node_id.into())),

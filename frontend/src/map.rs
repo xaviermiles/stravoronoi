@@ -76,11 +76,10 @@ impl MapEventListener for Listener {
 fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
     for (run_id, run_line) in run_lines {
         let layer_id = &run_id.to_string();
-        if let Err(e) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
-            log::error!("failed to add Strava source: {e:?}");
+        if let Err(err) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
+            log::error!("Failed to add Strava source: {err:?}");
             continue;
         }
-        log::info!("Adding Strava run layer");
 
         let mut layer = LineLayer::new(layer_id, layer_id);
         layer.layout.line_join = Some(LineJoin::Round.into());
@@ -88,8 +87,8 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
         layer.paint.line_color = Some(RUN_LINE_COLOR.into());
         layer.paint.line_width = Some(3.0.into());
 
-        if let Err(e) = map.add_layer(layer, None) {
-            log::error!("failed to add Strava layer: {e:?}");
+        if let Err(err) = map.add_layer(layer, None) {
+            log::error!("Failed to add Strava layer: {err:?}");
         }
     }
 }
@@ -102,9 +101,9 @@ fn add_grid_layers(map: &Map) {
     map.add_layer(lines, None).unwrap();
 
     let intersections: FeatureCollection = INTERSECTION_FILE.parse().unwrap();
-    map.add_geojson_source("blah", GeoJson::FeatureCollection(intersections))
+    map.add_geojson_source("intersections", GeoJson::FeatureCollection(intersections))
         .unwrap();
-    let circles = CircleLayer::new("blah", "blah");
+    let circles = CircleLayer::new("intersections", "intersections");
     map.add_layer(circles, None).unwrap();
 }
 
