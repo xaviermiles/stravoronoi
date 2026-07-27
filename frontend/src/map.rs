@@ -1,4 +1,5 @@
 use crate::strava::{self, LoadState};
+use boostvoronoi::prelude::*;
 use chrono::{DateTime, Utc};
 use geojson::{Feature, FeatureCollection, GeoJson};
 use mapboxgl::Source;
@@ -93,8 +94,89 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
     }
 }
 
+const SCALING_FACTOR: f64 = 10_000_000.;
+
+fn point_i64(point_f64: &[f64]) -> Point<i64> {
+    // boostvoronoi only supports integer types so cast the f64 to i64 but keep a reasonable
+    // amount of the precision by shifting left past the decimal place.
+    Point::new(
+        (point_f64[0] * SCALING_FACTOR) as i64,
+        (point_f64[1] * SCALING_FACTOR) as i64,
+    )
+}
+
+fn line_i64(start: &[f64], end: &[f64]) -> Line<i64> {
+    Line::new(point_i64(start), point_i64(end))
+}
+
+fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
+    segment_coords
+        .iter()
+        .zip(segment_coords.iter().skip(1))
+        .map(|(start, end)| line_i64(start, end))
+        .collect()
+}
+
 fn add_grid_layers(map: &Map) {
     let all_highways: FeatureCollection = ALL_GRID_FILE.parse().unwrap();
+    let feature1 = &all_highways.features[0].geometry.clone().unwrap().value;
+    log::warn!("{feature1:?}");
+    let mut segment_pairs = Vec::new();
+    for way in &all_highways {
+        if let Some(name) = way.property("name")
+            && name == "Oxford Terrace"
+        {
+            if let geojson::Value::LineString(segment) = way.geometry.clone().unwrap().value {
+                segment_pairs.extend(get_segment_pairs(&segment));
+            } else {
+                log::error!("Not a line string");
+            }
+        }
+    }
+
+    let diagram = Builder::<i64>::default()
+        .with_segments(segment_pairs)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut polygons = Vec::new();
+    for cell in diagram.cells() {
+        // combine continue/filter & map into a single iter operation?
+        if diagram
+            .cell_edge_iterator(cell.id())
+            .any(|edge_index| diagram.edge(edge_index).unwrap().vertex0().is_none())
+        {
+            continue;
+        }
+        let cell_coords: Vec<_> = diagram
+            .cell_edge_iterator(cell.id())
+            .map(|edge_index| {
+                let edge = diagram.edge(edge_index).unwrap();
+                let vertex_index = edge.vertex0().expect("filtered out None above");
+                let vertex = diagram.vertex(vertex_index).unwrap();
+                vec![vertex.x() / SCALING_FACTOR, vertex.y() / SCALING_FACTOR]
+            })
+            .collect();
+        polygons.push(cell_coords);
+    }
+    log::error!("{polygons:?}");
+    map.add_geojson_source(
+        "polygons",
+        GeoJson::Feature(Feature {
+            geometry: Some(geojson::Geometry::new(geojson::Value::MultiLineString(
+                polygons,
+            ))),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    let mut lines = LineLayer::new("polygons", "polygons");
+    lines.layout.line_join = Some(LineJoin::Round.into());
+    lines.layout.line_cap = Some(LineCap::Round.into());
+    lines.paint.line_color = Some(RUN_LINE_COLOR.into());
+    lines.paint.line_width = Some(3.0.into());
+    map.add_layer(lines, None).unwrap();
+
     map.add_geojson_source("all-highways", GeoJson::FeatureCollection(all_highways))
         .unwrap();
     let lines = LineLayer::new("all-highways", "all-highways");
