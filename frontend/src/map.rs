@@ -1,8 +1,10 @@
+/// Create and draw on the mapboxgl map.
 use crate::strava::{self, LoadState};
+use boostvoronoi::prelude::*;
 use chrono::{DateTime, Utc};
 use geojson::{Feature, GeoJson};
 use mapboxgl::Source;
-use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
+use mapboxgl::layer::{CircleLayer, IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
@@ -13,6 +15,9 @@ use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
+
+/// Shared handle to the map, populated once the map has been created.
+pub type MapRef = Rc<RefCell<Option<Rc<Map>>>>;
 
 /// Strava's brand orange, used for all run lines.
 const RUN_LINE_COLOR: &str = "#fc4c02";
@@ -27,6 +32,9 @@ struct Listener {
 
 impl MapEventListener for Listener {
     fn on_load(&mut self, map: Rc<Map>, _e: event::MapBaseEvent) {
+        // Draw the grid lines & intersections for debugging purposes.
+        let grid_map = map.clone();
+        wasm_bindgen_futures::spawn_local(async move { add_grid_layers(&grid_map).await });
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -65,11 +73,10 @@ impl MapEventListener for Listener {
 fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
     for (run_id, run_line) in run_lines {
         let layer_id = &run_id.to_string();
-        if let Err(e) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
-            log::error!("failed to add Strava source: {e:?}");
+        if let Err(err) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
+            log::error!("Failed to add Strava source: {err:?}");
             continue;
         }
-        log::info!("Adding Strava run layer");
 
         let mut layer = LineLayer::new(layer_id, layer_id);
         layer.layout.line_join = Some(LineJoin::Round.into());
@@ -77,8 +84,137 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
         layer.paint.line_color = Some(RUN_LINE_COLOR.into());
         layer.paint.line_width = Some(3.0.into());
 
-        if let Err(e) = map.add_layer(layer, None) {
-            log::error!("failed to add Strava layer: {e:?}");
+        if let Err(err) = map.add_layer(layer, None) {
+            log::error!("Failed to add Strava layer: {err:?}");
+        }
+    }
+}
+
+const SCALING_FACTOR: f64 = 10_000_000.;
+
+fn point_i64(point_f64: &[f64]) -> Point<i64> {
+    // boostvoronoi only supports integer types so cast the f64 to i64 but keep a reasonable
+    // amount of the precision by shifting left past the decimal place.
+    Point::new(
+        (point_f64[0] * SCALING_FACTOR) as i64,
+        (point_f64[1] * SCALING_FACTOR) as i64,
+    )
+}
+
+fn line_i64(start: &[f64], end: &[f64]) -> Line<i64> {
+    Line::new(point_i64(start), point_i64(end))
+}
+
+fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
+    segment_coords
+        .iter()
+        .zip(segment_coords.iter().skip(1))
+        .map(|(start, end)| line_i64(start, end))
+        .collect()
+}
+
+/// Add the grid layers to the map.
+async fn add_grid_layers(map: &Map) {
+    let all_highways = crate::road_grid::get_all_ways().await;
+    let mut segment_pairs = Vec::new();
+    for way in &all_highways {
+        if let Some(name) = way.property("name")
+            && name == "Oxford Terrace"
+        {
+            if let geojson::Value::LineString(segment) = way.geometry.clone().unwrap().value {
+                segment_pairs.extend(get_segment_pairs(&segment));
+            } else {
+                log::error!("Not a line string");
+            }
+        }
+    }
+
+    let diagram = Builder::<i64>::default()
+        .with_segments(segment_pairs)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut polygons = Vec::new();
+    for cell in diagram.cells() {
+        // combine continue/filter & map into a single iter operation?
+        if diagram
+            .cell_edge_iterator(cell.id())
+            .any(|edge_index| diagram.edge(edge_index).unwrap().vertex0().is_none())
+        {
+            continue;
+        }
+        let cell_coords: Vec<_> = diagram
+            .cell_edge_iterator(cell.id())
+            .map(|edge_index| {
+                let edge = diagram.edge(edge_index).unwrap();
+                let vertex_index = edge.vertex0().expect("filtered out None above");
+                let vertex = diagram.vertex(vertex_index).unwrap();
+                vec![vertex.x() / SCALING_FACTOR, vertex.y() / SCALING_FACTOR]
+            })
+            .collect();
+        polygons.push(cell_coords);
+    }
+    map.add_geojson_source(
+        "polygons",
+        GeoJson::Feature(Feature {
+            geometry: Some(geojson::Geometry::new(geojson::Value::MultiLineString(
+                polygons,
+            ))),
+            ..Default::default()
+        }),
+    )
+    .unwrap();
+    map.add_geojson_source("all-highways", GeoJson::FeatureCollection(all_highways))
+        .unwrap();
+    let intersections = crate::road_grid::get_intersections().await;
+    map.add_geojson_source("intersections", GeoJson::FeatureCollection(intersections))
+        .unwrap();
+}
+
+/// Ids of the layers that make up the debug road-grid overlay.
+const GRID_LAYER_IDS: [&str; 3] = ["polygons", "all-highways", "intersections"];
+
+/// Add the styled grid overlay layers, assuming their sources already exist.
+/// Each layer is skipped if it is already present, so this doubles as the
+/// "switch the overlay back on" path after it has been hidden.
+fn add_grid_layer_styles(map: &Map) {
+    if map.get_geojson_source("polygons").is_some() && map.get_layer("polygons").is_err() {
+        let mut lines = LineLayer::new("polygons", "polygons");
+        lines.layout.line_join = Some(LineJoin::Round.into());
+        lines.layout.line_cap = Some(LineCap::Round.into());
+        lines.paint.line_color = Some(RUN_LINE_COLOR.into());
+        lines.paint.line_width = Some(3.0.into());
+        if let Err(err) = map.add_layer(lines, None) {
+            log::error!("Failed to add polygons layer: {err:?}");
+        }
+    }
+    if map.get_geojson_source("all-highways").is_some() && map.get_layer("all-highways").is_err() {
+        let lines = LineLayer::new("all-highways", "all-highways");
+        if let Err(err) = map.add_layer(lines, None) {
+            log::error!("Failed to add all-highways layer: {err:?}");
+        }
+    }
+    if map.get_geojson_source("intersections").is_some() && map.get_layer("intersections").is_err()
+    {
+        let circles = CircleLayer::new("intersections", "intersections");
+        if let Err(err) = map.add_layer(circles, None) {
+            log::error!("Failed to add intersections layer: {err:?}");
+        }
+    }
+}
+
+/// Show or hide the debug road-grid overlay. The GeoJSON sources persist when a
+/// layer is removed, so toggling back on just re-adds the (cheap) layers.
+pub fn set_grid_visible(map: &Map, visible: bool) {
+    if visible {
+        add_grid_layer_styles(map);
+    } else {
+        for id in GRID_LAYER_IDS {
+            if map.get_layer(id).is_ok() {
+                if let Err(err) = map.remove_layer(id) {
+                    log::error!("Failed to remove grid layer {id}: {err:?}");
+                }
+            }
         }
     }
 }
@@ -125,7 +261,7 @@ fn create_map() -> Rc<Map> {
 }
 
 #[hook]
-pub fn use_map(on_unauthorized: Callback<()>) -> Rc<RefCell<Option<Rc<Map>>>> {
+pub fn use_map(on_unauthorized: Callback<()>) -> MapRef {
     let map = use_mut_ref(|| Option::<Rc<Map>>::None);
 
     {

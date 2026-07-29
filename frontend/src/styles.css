@@ -12,11 +12,12 @@ button {
     padding: 6px 16px;
     right: 10px;
     z-index: 1;
-    border: 1px solid white;
-    font-weight: 600; 
-    background-color: white; 
-    font-size: 14px; 
-    border-radius: 4px; 
+    border: 1px solid gray;
+    font-weight: 600;
+    background-color: white;
+    font-size: 14px;
+    border-radius: 4px;
+    cursor: pointer;
     font-family: "Boathouse,Segoe UI,Helvetica Neue,-apple-system,system-ui,BlinkMacSystemFont,Roboto,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol;"
 }
 
@@ -30,4 +31,24 @@ button {
     height: 40px;
     border-radius: 50%;
     object-fit: cover;
+}
+
+/* Checkbox overlay toggling the debug road-grid overlay. */
+#grid-toggle {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background-color: white;
+    border-radius: 4px;
+    border: 1px solid gray;
+    font-family: "Boathouse,Segoe UI,Helvetica Neue,-apple-system,system-ui,BlinkMacSystemFont,Roboto,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol;";
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
 }

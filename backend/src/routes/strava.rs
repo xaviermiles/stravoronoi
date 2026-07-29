@@ -112,11 +112,11 @@ pub async fn auth_callback(
                 }
                 Err(err) => {
                     tracing::error!("Failed to create session: {err}");
-                    return (
+                    (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "Creating session failed.",
                     )
-                        .into_response();
+                        .into_response()
                 }
             }
         }
