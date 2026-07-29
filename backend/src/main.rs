@@ -4,6 +4,8 @@ use axum::{
     routing::{get, post},
 };
 use sea_orm::DatabaseConnection;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
@@ -11,6 +13,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
 
 mod models;
+mod road_grid;
 mod routes;
 mod services;
 mod session;
@@ -30,8 +33,31 @@ pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
 #[derive(Clone)]
 struct AppState {
     database: DatabaseConnection,
-    // TODO: reqwest::Client, Strava OAuth config (client id / secret / redirect
-    // uri), and a session signing key.
+    /// Flag to indicate whether the road grid is ready to be read.
+    ///
+    /// If false, it is still seeding.
+    is_grid_ready: Arc<AtomicBool>,
+}
+
+async fn init_app_state() -> AppState {
+    let database = models::connect_database()
+        .await
+        .expect("need a database connection");
+    let is_grid_ready = Arc::new(AtomicBool::new(false));
+    let state = AppState {
+        database,
+        is_grid_ready: is_grid_ready.clone(),
+    };
+
+    // Seed the road grid without blocking.
+    let seed_database = state.database.clone();
+    tokio::spawn(async move {
+        match road_grid::seed(&seed_database).await {
+            Ok(()) => is_grid_ready.store(true, Ordering::Release),
+            Err(err) => tracing::warn!("Failed to seed road grid: {err}"),
+        }
+    });
+    state
 }
 
 #[tokio::main]
@@ -41,10 +67,7 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let database = models::connect_database()
-        .await
-        .expect("need a database connection");
-    let state = AppState { database };
+    let state = init_app_state().await;
 
     let frontend_base_url = Url::parse(FRONTEND_URL)
         .expect("Defined statically")
@@ -63,6 +86,11 @@ async fn main() {
         .route("/auth/logout", post(routes::strava::auth_logout))
         .route("/api/me", get(routes::strava::get_me))
         .route("/api/runs", get(routes::runs::get_runs))
+        .route("/api/grid/ways", get(routes::grid::get_ways))
+        .route(
+            "/api/grid/intersections",
+            get(routes::grid::get_intersections),
+        )
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS layer goes last so it executes first for incoming requests and wraps everything else.

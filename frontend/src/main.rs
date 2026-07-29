@@ -1,5 +1,6 @@
 mod login_button;
 mod map;
+mod road_grid;
 mod session;
 mod strava;
 use login_button::LoginButton;

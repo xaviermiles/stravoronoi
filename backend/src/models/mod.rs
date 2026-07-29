@@ -1,8 +1,11 @@
+/// Database models.
 use sea_orm::ConnectOptions;
 use sea_orm::Database;
 use sea_orm::DatabaseConnection;
 use sea_orm::DbErr;
 pub mod athlete;
+pub mod grid_node;
+pub mod grid_way;
 pub mod run;
 pub mod session;
 

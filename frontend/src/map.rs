@@ -1,7 +1,8 @@
+/// Create and draw on the mapboxgl map.
 use crate::strava::{self, LoadState};
 use boostvoronoi::prelude::*;
 use chrono::{DateTime, Utc};
-use geojson::{Feature, FeatureCollection, GeoJson};
+use geojson::{Feature, GeoJson};
 use mapboxgl::Source;
 use mapboxgl::layer::{CircleLayer, IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
@@ -22,23 +23,15 @@ const RUN_LINE_COLOR: &str = "#fc4c02";
 const SLOW_CONTINUE_TIME: Duration = Duration::from_secs(1);
 const FAST_CONTINUE_TIME: Duration = Duration::from_millis(10);
 
-// TODO: will be moved to backend eventually
-static ALL_GRID_FILE: &str = include_str!("../../christchurch_ways.geojson");
-static INTERSECTION_FILE: &str = include_str!("../../christchurch_intersections.geojson");
-
 struct Listener {
     on_unauthorized: Callback<()>,
 }
 
-// #[derive(Deserialize, Debug)]
-// struct OverpassResponse {
-//     elements: Vec<OsmElement>,
-// }
-
 impl MapEventListener for Listener {
     fn on_load(&mut self, map: Rc<Map>, _e: event::MapBaseEvent) {
         // Draw the grid lines & intersections for debugging purposes.
-        add_grid_layers(&map);
+        let grid_map = map.clone();
+        wasm_bindgen_futures::spawn_local(async move { add_grid_layers(&grid_map).await });
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
@@ -117,8 +110,9 @@ fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
         .collect()
 }
 
-fn add_grid_layers(map: &Map) {
-    let all_highways: FeatureCollection = ALL_GRID_FILE.parse().unwrap();
+/// Add the grid layers to the map.
+async fn add_grid_layers(map: &Map) {
+    let all_highways = crate::road_grid::get_all_ways().await;
     let feature1 = &all_highways.features[0].geometry.clone().unwrap().value;
     log::warn!("{feature1:?}");
     let mut segment_pairs = Vec::new();
@@ -182,7 +176,7 @@ fn add_grid_layers(map: &Map) {
     let lines = LineLayer::new("all-highways", "all-highways");
     map.add_layer(lines, None).unwrap();
 
-    let intersections: FeatureCollection = INTERSECTION_FILE.parse().unwrap();
+    let intersections = crate::road_grid::get_intersections().await;
     map.add_geojson_source("intersections", GeoJson::FeatureCollection(intersections))
         .unwrap();
     let circles = CircleLayer::new("intersections", "intersections");
