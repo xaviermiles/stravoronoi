@@ -1,9 +1,16 @@
 /// Imports and processes the road grid.
-use crate::models;
+use crate::models::{grid_cell, grid_node, grid_way};
 use crate::services::overpass::{self, OsmElement};
+use boostvoronoi::prelude::*;
+use geojson::Feature;
+use geojson::Geometry;
+use geojson::Value;
+use geojson::feature::Id;
 use sea_orm::ActiveValue::Set;
+use sea_orm::EntityTrait;
+use sea_orm::QueryFilter;
 use sea_orm::prelude::Expr;
-use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, PaginatorTrait, QueryFilter};
+use sea_orm::{ColumnTrait, DatabaseConnection, PaginatorTrait};
 use std::collections::{HashMap, HashSet};
 
 /// OSM coordinates are persisted as fixed-point integers scaled by 1e7 (E7),
@@ -14,9 +21,137 @@ pub const COORD_SCALE: f64 = 1e7;
 /// Maximum rows per bulk insert, kept well under SQLite's bound-parameter limit.
 const INSERT_CHUNK: usize = 300;
 
+const SCALING_FACTOR: f64 = 10_000_000.;
+
+async fn get_ways(database: &DatabaseConnection) -> Vec<Feature> {
+    // Join each way segment to its node so coordinates are resolved in the query.
+    let ways = match grid_way::Entity::find()
+        .order_by_id_asc()
+        .find_also_related(grid_node::Entity)
+        .all(database)
+        .await
+    {
+        Ok(ways) => ways,
+        Err(err) => {
+            tracing::error!("Error finding grid ways: {err}");
+            return Vec::new();
+        }
+    };
+
+    // Chunk by way_id to create a LineString feature for each way.
+    ways.chunk_by(|a, b| a.0.way_id == b.0.way_id)
+        .filter_map(|chunk| {
+            let coords: Vec<Vec<f64>> = chunk
+                .iter()
+                .filter_map(|(_, node)| node.as_ref())
+                .map(|node| {
+                    vec![
+                        (node.longitude as f64) / COORD_SCALE,
+                        (node.latitude as f64) / COORD_SCALE,
+                    ]
+                })
+                .collect();
+            let way = &chunk[0].0;
+            let mut properties = geojson::JsonObject::new();
+            if let Some(name) = &way.name {
+                properties.insert("name".to_string(), serde_json::Value::String(name.clone()));
+            }
+            Some(Feature {
+                id: Some(Id::Number(way.way_id.into())),
+                geometry: Some(Geometry::new(Value::LineString(coords))),
+                properties: Some(properties),
+                ..Default::default()
+            })
+        })
+        .collect()
+}
+
+/// Create boostvoronoi point from coordinate.
+///
+/// boostvoronoi only supports integer types so cast the f64 to i64.
+fn point_i64(point_f64: &[f64]) -> Point<i64> {
+    Point::new(
+        (point_f64[0] * COORD_SCALE) as i64,
+        (point_f64[1] * COORD_SCALE) as i64,
+    )
+}
+
+fn line_i64(start: &[f64], end: &[f64]) -> Line<i64> {
+    Line::new(point_i64(start), point_i64(end))
+}
+
+fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
+    segment_coords
+        .iter()
+        .zip(segment_coords.iter().skip(1))
+        .map(|(start, end)| line_i64(start, end))
+        .collect()
+}
+
+async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
+    // TODO: this is lazy way to get them (code copied from router).
+    let ways = get_ways(database).await;
+    let mut segment_pairs = Vec::new();
+    for way in ways {
+        if let Some(name) = way.property("name")
+            && name == "Oxford Terrace"
+        {
+            if let geojson::Value::LineString(segment) = way.geometry.clone().unwrap().value {
+                segment_pairs.extend(get_segment_pairs(&segment));
+            } else {
+                tracing::error!("Not a line string");
+            }
+        }
+    }
+
+    let diagram = Builder::<i64>::default()
+        .with_segments(segment_pairs)
+        .unwrap()
+        .build()
+        .unwrap();
+    let mut polygons = Vec::new();
+    for (index, cell) in diagram.cells().iter().enumerate() {
+        // combine continue/filter & map into a single iter operation?
+        if diagram
+            .cell_edge_iterator(cell.id())
+            .any(|edge_index| diagram.edge(edge_index).unwrap().vertex0().is_none())
+        {
+            continue;
+        }
+        let cell_coords: Vec<_> = diagram
+            .cell_edge_iterator(cell.id())
+            .map(|edge_index| {
+                let edge = diagram.edge(edge_index).unwrap();
+                let vertex_index = edge.vertex0().expect("filtered out None above");
+                let vertex = diagram.vertex(vertex_index).unwrap();
+                vec![vertex.x() / SCALING_FACTOR, vertex.y() / SCALING_FACTOR]
+            })
+            .collect();
+        polygons.push(grid_cell::ActiveModel {
+            // TODO: better ID than index
+            cell_id: Set(index as u32),
+            geojson: Set(geojson::Feature {
+                geometry: Some(geojson::Geometry::new(geojson::Value::LineString(
+                    cell_coords,
+                ))),
+                ..Default::default()
+            }
+            .to_string()),
+        })
+    }
+
+    for cell_chunk in polygons.chunks(INSERT_CHUNK) {
+        grid_cell::Entity::insert_many(cell_chunk.to_vec())
+            .exec(database)
+            .await
+            .map_err(|err| format!("Failed to insert polygon cells: {err}"))?;
+    }
+
+    Ok(())
+}
+
 /// Fetch the Christchurch road network from Overpass and persist it as grid
-/// nodes ([`models::grid_node`]) and ordered way-node segments
-/// ([`models::grid_way`]).
+/// nodes and ordered way-node segments.
 async fn load(database: &DatabaseConnection) -> Result<(), String> {
     let response = overpass::get_overpass_data().await?;
 
@@ -26,7 +161,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     for element in response.elements {
         match element {
             OsmElement::Node { id, lat, lon } => {
-                nodes.push(models::grid_node::ActiveModel {
+                nodes.push(grid_node::ActiveModel {
                     id: Set(id),
                     latitude: Set((lat * COORD_SCALE) as i32),
                     longitude: Set((lon * COORD_SCALE) as i32),
@@ -43,7 +178,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                 // (way_id, sequence, node_id) row.
                 let tags = tags.unwrap_or_default();
                 for (sequence, node_id) in node_ids.iter().enumerate() {
-                    ways.push(models::grid_way::ActiveModel {
+                    ways.push(grid_way::ActiveModel {
                         way_id: Set(id as i64),
                         name: Set(tags.get("name").cloned()),
                         sequence: Set(sequence as i32),
@@ -72,13 +207,13 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
 
     // Insert nodes first so the way-node references always resolve.
     for nodes_chunk in nodes.chunks(INSERT_CHUNK) {
-        models::grid_node::Entity::insert_many(nodes_chunk.to_vec())
+        grid_node::Entity::insert_many(nodes_chunk.to_vec())
             .exec(database)
             .await
             .map_err(|err| format!("Failed to insert grid nodes: {err}"))?;
     }
     for ways_chunk in ways.chunks(INSERT_CHUNK) {
-        models::grid_way::Entity::insert_many(ways_chunk.to_vec())
+        grid_way::Entity::insert_many(ways_chunk.to_vec())
             .exec(database)
             .await
             .map_err(|err| format!("Failed to insert way nodes: {err}"))?;
@@ -93,9 +228,9 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     tracing::info!("Found {} intersection nodes", intersection_ids.len());
 
     for intersection_ids_chunk in intersection_ids.chunks(INSERT_CHUNK) {
-        models::grid_node::Entity::update_many()
-            .col_expr(models::grid_node::Column::IsIntersection, Expr::value(true))
-            .filter(models::grid_node::Column::Id.is_in(intersection_ids_chunk.iter().copied()))
+        grid_node::Entity::update_many()
+            .col_expr(grid_node::Column::IsIntersection, Expr::value(true))
+            .filter(grid_node::Column::Id.is_in(intersection_ids_chunk.iter().copied()))
             .exec(database)
             .await
             .map_err(|err| format!("Failed to flag intersection nodes: {err}"))?;
@@ -107,13 +242,25 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
 /// Populate the road grid only when it is empty, so a cold database gets seeded
 /// while repeat startups are cheap no-ops.
 pub async fn seed(database: &DatabaseConnection) -> Result<(), String> {
-    let existing_count = models::grid_node::Entity::find()
+    let existing_node_count = grid_node::Entity::find()
         .count(database)
         .await
         .map_err(|err| format!("Failed to count grid nodes: {err}"))?;
-    if existing_count > 0 {
+    if existing_node_count > 0 {
         tracing::info!("Skipping populating road grid as already filled.");
-        return Ok(());
+    } else {
+        load(database).await?;
     }
-    load(database).await
+    // TODO: should this be 2 separate seeding jobs?
+    let existing_cell_count = grid_cell::Entity::find()
+        .count(database)
+        .await
+        .map_err(|err| format!("Failed to count grid cells: {err}"))?;
+    if existing_cell_count > 0 {
+        tracing::info!("Skipping populating road cells as already filled.");
+    } else {
+        seed_voronoi(database).await?;
+    }
+
+    Ok(())
 }

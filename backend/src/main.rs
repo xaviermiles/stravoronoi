@@ -90,6 +90,10 @@ async fn main() {
         .route(
             "/api/grid/intersections",
             get(routes::grid::get_intersections),
+        )        
+        .route(
+            "/api/grid/cells",
+            get(routes::grid::get_cells),
         )
         .with_state(state)
         .layer(TraceLayer::new_for_http())

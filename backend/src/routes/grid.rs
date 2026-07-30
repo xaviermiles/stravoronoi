@@ -1,10 +1,11 @@
 /// Endpoints for the road grid.
 use crate::AppState;
-use crate::models::{grid_node, grid_way};
+use crate::models::{grid_cell, grid_node, grid_way};
 use crate::road_grid;
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
+use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use geojson::Geometry;
 use geojson::Value;
@@ -104,4 +105,31 @@ pub async fn get_intersections(State(state): State<AppState>) -> Response {
         })
         .collect();
     as_response(features)
+}
+
+pub async fn get_cells(State(state): State<AppState>) -> Response {
+    if !state.is_grid_ready.load(Ordering::Acquire) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let cells = match grid_cell::Entity::find().all(&state.database).await {
+        Ok(cells) => cells,
+        Err(err) => {
+            tracing::error!("Error finding grid cells: {err}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // Each `geojson` column already holds a serialized Feature, so splice the
+    // stored strings straight into a FeatureCollection body instead of parsing
+    // them into geojson types and re-serializing via `Json`.
+    let mut body = String::from(r#"{"type":"FeatureCollection","features":["#);
+    for (index, cell) in cells.iter().enumerate() {
+        if index > 0 {
+            body.push(',');
+        }
+        body.push_str(&cell.geojson);
+    }
+    body.push_str("]}");
+
+    ([(header::CONTENT_TYPE, "application/geo+json")], body).into_response()
 }

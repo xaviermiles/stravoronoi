@@ -386,6 +386,7 @@ name = "backend"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "boostvoronoi",
  "chrono",
  "comms",
  "dotenvy",
@@ -1041,7 +1042,6 @@ dependencies = [
 name = "frontend"
 version = "0.1.0"
 dependencies = [
- "boostvoronoi",
  "chrono",
  "comms",
  "dotenvy",

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
+boostvoronoi = "0.12.1"
 chrono = { version = "0.4", features = ["serde"] }
 comms = { path = "../comms" }
 geo-types = "0.7.19"
