@@ -131,8 +131,8 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
             // TODO: better ID than index
             cell_id: Set(index as u32),
             geojson: Set(geojson::Feature {
-                geometry: Some(geojson::Geometry::new(geojson::Value::LineString(
-                    cell_coords,
+                geometry: Some(geojson::Geometry::new(geojson::Value::Polygon(
+                    vec![cell_coords],
                 ))),
                 ..Default::default()
             }

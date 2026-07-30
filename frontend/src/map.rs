@@ -1,3 +1,4 @@
+use crate::components::grid_toggle::get_show_grid_storage_value;
 /// Create and draw on the mapboxgl map.
 use crate::strava::{self, LoadState};
 use chrono::{DateTime, Utc};
@@ -33,7 +34,11 @@ impl MapEventListener for Listener {
     fn on_load(&mut self, map: Rc<Map>, _e: event::MapBaseEvent) {
         // Draw the grid lines & intersections for debugging purposes.
         let grid_map = map.clone();
-        wasm_bindgen_futures::spawn_local(async move { add_grid_layers(&grid_map).await });
+        wasm_bindgen_futures::spawn_local(async move {
+            add_grid_layers(&grid_map).await;
+            // Once the sources exist, honour the overlay preference persisted in local storage.
+            set_grid_visible(&grid_map, get_show_grid_storage_value());
+        });
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
         wasm_bindgen_futures::spawn_local(async move {
