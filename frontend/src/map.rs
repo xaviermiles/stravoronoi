@@ -19,6 +19,10 @@ const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 /// Shared handle to the map, populated once the map has been created.
 pub type MapRef = Rc<RefCell<Option<Rc<Map>>>>;
 
+/// Ids of the per-run line layers, shared with the click listener so it can
+/// restrict feature queries to run layers only. Grows as runs are paged in.
+type RunLayerIds = Rc<RefCell<Vec<String>>>;
+
 /// Strava's brand orange, used for all run lines.
 const RUN_LINE_COLOR: &str = "#fc4c02";
 
@@ -37,6 +41,15 @@ impl MapEventListener for Listener {
         wasm_bindgen_futures::spawn_local(async move { add_grid_layers(&grid_map).await });
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
+        // A single map-level click listener, shared with the run layers it filters on.
+        // Registered once here rather than per-run to avoid re-adding listeners in the
+        // paging loop below.
+        let run_layers: RunLayerIds = Rc::new(RefCell::new(Vec::new()));
+        if let Err(err) = map.on(RunClickListener {
+            run_layers: run_layers.clone(),
+        }) {
+            log::error!("Failed to register run click listener: {err:?}");
+        }
         wasm_bindgen_futures::spawn_local(async move {
             let mut before: Option<DateTime<Utc>> = None;
             loop {
@@ -52,7 +65,7 @@ impl MapEventListener for Listener {
                         break;
                     }
                 };
-                add_run_layers(&map, loaded_runs.features);
+                add_run_layers(&map, loaded_runs.features, &run_layers);
                 let next_before = match loaded_runs.load_state {
                     LoadState::Continue(next_before) => next_before,
                     LoadState::Finished => break,
@@ -70,23 +83,73 @@ impl MapEventListener for Listener {
 }
 
 /// Add the decoded Strava runs to the map as single-color line layers.
-fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
-    for (run_id, run_line) in run_lines {
-        let layer_id = &run_id.to_string();
-        if let Err(err) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
+///
+/// Each run gets its own source and layer, keyed by the run id. The layer ids
+/// are recorded in `run_layers` so the shared click listener can restrict its
+/// feature queries to run layers only.
+fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_layers: &RunLayerIds) {
+    for (run_id, mut run_line) in run_lines {
+        let layer_id = run_id.to_string();
+        // Tag the feature with the run id so the click listener can label popups.
+        run_line.id = Some(geojson::feature::Id::Number(run_id.into()));
+        if let Err(err) = map.add_geojson_source(&layer_id, GeoJson::Feature(run_line)) {
             log::error!("Failed to add Strava source: {err:?}");
             continue;
         }
 
-        let mut layer = LineLayer::new(layer_id, layer_id);
+        let mut layer = LineLayer::new(&layer_id, &layer_id);
         layer.layout.line_join = Some(LineJoin::Round.into());
         layer.layout.line_cap = Some(LineCap::Round.into());
         layer.paint.line_color = Some(RUN_LINE_COLOR.into());
         layer.paint.line_width = Some(3.0.into());
 
-        if let Err(err) = map.add_layer(layer, None) {
-            log::error!("Failed to add Strava layer: {err:?}");
+        match map.add_layer(layer, None) {
+            Ok(()) => run_layers.borrow_mut().push(layer_id),
+            Err(err) => log::error!("Failed to add Strava layer: {err:?}"),
         }
+    }
+}
+
+/// Single, map-level click listener that shows a popup only when a run line is clicked.
+struct RunClickListener {
+    run_layers: RunLayerIds,
+}
+
+impl MapEventListener for RunClickListener {
+    fn on_click(&mut self, map: Rc<Map>, e: event::MapMouseEvent) {
+        let layers = self.run_layers.borrow().clone();
+
+        let hits = match map.query_rendered_features(
+            Some(e.point.clone()),
+            mapboxgl::QueryFeatureOptions {
+                layers,
+                ..Default::default()
+            },
+        ) {
+            Ok(hits) => hits,
+            Err(err) => {
+                log::error!("Failed to query run features: {err:?}");
+                return;
+            }
+        };
+
+        // No run line under the cursor: the click wasn't on a run, so do nothing.
+        let Some(feature) = hits.into_iter().next() else {
+            return;
+        };
+        let Some(properties) = feature.properties else {
+            return;
+        };
+        let Some(serde_json::Value::String(label)) = properties.get("name") else {
+            return;
+        };
+
+        let popup = mapboxgl::Popup::new(
+            LngLat::new(e.lng_lat.lng, e.lng_lat.lat),
+            mapboxgl::PopupOptions::new(),
+        );
+        popup.set_html(label);
+        popup.add_to(&map);
     }
 }
 
