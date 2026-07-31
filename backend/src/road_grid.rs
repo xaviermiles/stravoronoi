@@ -88,19 +88,38 @@ fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
         .collect()
 }
 
+/// Extract the numeric OSM way id carried on a way feature.
+fn feature_way_id(way: &Feature) -> Option<i64> {
+    match way.id.as_ref()? {
+        Id::Number(number) => number.as_i64(),
+        Id::String(_) => None,
+    }
+}
+
 async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
     // TODO: this is lazy way to get them (code copied from router).
     let ways = get_ways(database).await;
     let mut segment_pairs = Vec::new();
+    // `segment_ways[i]` records the way that produced `segment_pairs[i]`. Because
+    // the diagram is built from segments only, a cell's `source_index()` indexes
+    // straight back into these vectors, giving cell -> way.
+    let mut segment_ways: Vec<i64> = Vec::new();
     for way in ways {
-        if let Some(name) = way.property("name")
-            && name == "Oxford Terrace"
-        {
-            if let geojson::Value::LineString(segment) = way.geometry.clone().unwrap().value {
-                segment_pairs.extend(get_segment_pairs(&segment));
-            } else {
-                tracing::error!("Not a line string");
-            }
+        let Some(way_id) = feature_way_id(&way) else {
+            continue;
+        };
+        if way.property("name").and_then(|name| name.as_str()) != Some("Oxford Terrace") {
+            continue;
+        }
+        let Some(geometry) = &way.geometry else {
+            continue;
+        };
+        let geojson::Value::LineString(coords) = &geometry.value else {
+            continue;
+        };
+        for segment in get_segment_pairs(coords) {
+            segment_pairs.push(segment);
+            segment_ways.push(way_id);
         }
     }
 
@@ -109,7 +128,7 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
         .unwrap()
         .build()
         .unwrap();
-    let mut polygons = Vec::new();
+    let mut polygons: HashMap<i64, geo_types::Polygon<f64>> = HashMap::new();
     for (index, cell) in diagram.cells().iter().enumerate() {
         // combine continue/filter & map into a single iter operation?
         if diagram
@@ -127,19 +146,22 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
                 vec![vertex.x() / SCALING_FACTOR, vertex.y() / SCALING_FACTOR]
             })
             .collect();
-        polygons.push(grid_cell::ActiveModel {
-            // TODO: better ID than index
-            cell_id: Set(index as u32),
-            geojson: Set(geojson::Feature {
-                geometry: Some(geojson::Geometry::new(geojson::Value::Polygon(
-                    vec![cell_coords],
-                ))),
-                ..Default::default()
-            }
-            .to_string()),
-        })
+        // Map the cell back to the way whose segment created it. All cells a
+        // segment spawns (its body and two endpoints) share this source index.
+        let Some(way_id) = segment_ways.get(cell.source_index().usize()).copied() else {
+            tracing::error!("Unrecognised cell source index.");
+            continue;
+        };
+        let polygon = geo_types::Polygon::new(vec![cell_coords], vec![]);
+        polygons.entry(way_id).or_default().push(polygon);
     }
 
+    let polygons_database = polygons.iter().map(|(way_id, polygon_cells)|) {
+        grid_cell::ActiveModel {
+            way_id: Set(way_id),
+            geojson: geo::algorithm::unary_union(polygon_cells),
+        }
+        }).collect();
     for cell_chunk in polygons.chunks(INSERT_CHUNK) {
         grid_cell::Entity::insert_many(cell_chunk.to_vec())
             .exec(database)

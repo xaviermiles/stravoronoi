@@ -6,7 +6,7 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "grid_cell")]
 pub struct Model {
     #[sea_orm(primary_key)]
-    pub cell_id: u32,
+    pub way_id: u32,
     /// The geometry of the voronoi cell as a geojson string.
     pub geojson: String,
 }
