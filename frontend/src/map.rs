@@ -24,10 +24,10 @@ pub type MapRef = Rc<RefCell<Option<Rc<Map>>>>;
 type RunLayerIds = Rc<RefCell<Vec<String>>>;
 
 /// Strava's brand orange, used for all run lines.
-const RUN_LINE_COLOR: &str = "#fc4c02";
+const RUN_LINE_COLOUR: &str = "#fc4c02";
 
 // If the API returns nothing, avoid spamming the backend while it populates.
-const SLOW_CONTINUE_TIME: Duration = Duration::from_secs(1);
+const SLOW_CONTINUE_TIME: Duration = Duration::from_millis(100);
 const FAST_CONTINUE_TIME: Duration = Duration::from_millis(10);
 
 struct Listener {
@@ -82,7 +82,7 @@ impl MapEventListener for Listener {
     }
 }
 
-/// Add the decoded Strava runs to the map as single-color line layers.
+/// Add the decoded Strava runs to the map as single-colour line layers.
 ///
 /// Each run gets its own source and layer, keyed by the run id. The layer ids
 /// are recorded in `run_layers` so the shared click listener can restrict its
@@ -100,7 +100,7 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_layers: &RunLay
         let mut layer = LineLayer::new(&layer_id, &layer_id);
         layer.layout.line_join = Some(LineJoin::Round.into());
         layer.layout.line_cap = Some(LineCap::Round.into());
-        layer.paint.line_color = Some(RUN_LINE_COLOR.into());
+        layer.paint.line_color = Some(RUN_LINE_COLOUR.into());
         layer.paint.line_width = Some(3.0.into());
 
         match map.add_layer(layer, None) {
@@ -248,7 +248,7 @@ fn add_grid_layer_styles(map: &Map) {
         let mut lines = LineLayer::new("polygons", "polygons");
         lines.layout.line_join = Some(LineJoin::Round.into());
         lines.layout.line_cap = Some(LineCap::Round.into());
-        lines.paint.line_color = Some(RUN_LINE_COLOR.into());
+        lines.paint.line_color = Some(RUN_LINE_COLOUR.into());
         lines.paint.line_width = Some(3.0.into());
         if let Err(err) = map.add_layer(lines, None) {
             log::error!("Failed to add polygons layer: {err:?}");
