@@ -273,10 +273,10 @@ pub fn set_grid_visible(map: &Map, visible: bool) {
         add_grid_layer_styles(map);
     } else {
         for id in GRID_LAYER_IDS {
-            if map.get_layer(id).is_ok() {
-                if let Err(err) = map.remove_layer(id) {
-                    log::error!("Failed to remove grid layer {id}: {err:?}");
-                }
+            if map.get_layer(id).is_ok()
+                && let Err(err) = map.remove_layer(id)
+            {
+                log::error!("Failed to remove grid layer {id}: {err:?}");
             }
         }
     }
