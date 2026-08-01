@@ -5,6 +5,7 @@
 
 use crate::{BACKEND_BASE_URL, session};
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use geojson::{Feature, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
@@ -118,6 +119,19 @@ pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns,
             properties.insert(
                 "name".to_string(),
                 serde_json::Value::String(run.name.clone()),
+            );
+            // Future improvements to datetime:
+            // - Use "Today" & "Yesterday" instead of date, if appropriate.
+            // - Don't assume the run is in NZ. Use the timezone that corresponds to the start coordinate.
+            let nz_tz: Tz = "Pacific/Auckland".parse().unwrap();
+            let formatted_time = run
+                .start_date
+                .with_timezone(&nz_tz)
+                .format("%A, %d %b %Y at %l:%M%P")
+                .to_string();
+            properties.insert(
+                "start_date".to_string(),
+                serde_json::Value::String(formatted_time),
             );
             let coords = decode_line(&run.summary_map);
 
