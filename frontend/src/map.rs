@@ -13,6 +13,7 @@ use std::{cell::RefCell, rc::Rc};
 use yew::platform::time;
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
+use web_sys::wasm_bindgen::JsCast;
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 
@@ -49,6 +50,12 @@ impl MapEventListener for Listener {
             run_layers: run_layers.clone(),
         }) {
             log::error!("Failed to register run click listener: {err:?}");
+        }
+        // Show a pointer cursor while hovering a run line to signal it's clickable.
+        if let Err(err) = map.on(RunHoverListener {
+            run_layers: run_layers.clone(),
+        }) {
+            log::error!("Failed to register run hover listener: {err:?}");
         }
         wasm_bindgen_futures::spawn_local(async move {
             let mut before: Option<DateTime<Utc>> = None;
@@ -153,6 +160,40 @@ impl MapEventListener for RunClickListener {
         );
         popup.set_html(format!("<h3>{start_date}</h3><h1>{name}"));
         popup.add_to(&map);
+    }
+}
+
+/// Single, map-level listener that shows a pointer cursor while hovering a run line,
+/// signalling that it can be clicked. Mirrors `RunClickListener` by filtering the
+/// feature query to the run layers only.
+struct RunHoverListener {
+    run_layers: RunLayerIds,
+}
+
+impl MapEventListener for RunHoverListener {
+    fn on_mousemove(&mut self, map: Rc<Map>, e: event::MapMouseEvent) {
+        let layers = self.run_layers.borrow().clone();
+        let over_run = map
+            .query_rendered_features(
+                Some(e.point.clone()),
+                mapboxgl::QueryFeatureOptions {
+                    layers,
+                    ..Default::default()
+                },
+            )
+            .map(|hits| !hits.is_empty())
+            .unwrap_or(false);
+        set_cursor(&map, if over_run { "pointer" } else { "" });
+    }
+}
+
+/// Set the CSS cursor on the map canvas. An empty string restores the default
+/// (grab/drag) cursor that Mapbox manages.
+fn set_cursor(map: &Map, cursor: &str) {
+    if let Ok(Some(canvas)) = map.get_container().query_selector(".mapboxgl-canvas")
+        && let Ok(canvas) = canvas.dyn_into::<web_sys::HtmlElement>()
+    {
+        let _ = canvas.style().set_property("cursor", cursor);
     }
 }
 
