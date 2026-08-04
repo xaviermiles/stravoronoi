@@ -6,6 +6,7 @@
 use crate::{BACKEND_BASE_URL, session};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
+use comms::runs::RunResponse;
 use geojson::{Feature, Geometry, Value};
 use gloo_net::http::Request;
 use http::status::StatusCode;
@@ -106,6 +107,52 @@ fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
     }
 }
 
+fn format_time(seconds: i64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let remaining_seconds = seconds % 60;
+    if hours >= 1 {
+        if minutes > 0 {
+            format!("{}h {}m", hours, minutes)
+        } else {
+            format!("{}h", hours)
+        }
+    } else if minutes >= 1 {
+        if remaining_seconds > 0 {
+            format!("{}m {}s", minutes, remaining_seconds)
+        } else {
+            format!("{}m", minutes)
+        }
+    } else {
+        // unlikely lol
+        format!("{}s", remaining_seconds)
+    }
+}
+
+fn get_properties(run: &RunResponse) -> serde_json::Map<String, serde_json::Value> {
+    // Future improvements to datetime:
+    // - Use "Today" & "Yesterday" instead of date, if appropriate.
+    // - Don't assume the run is in NZ. Use the timezone that corresponds to the start coordinate.
+    let nz_tz: Tz = "Pacific/Auckland".parse().unwrap();
+    let formatted_time = run
+        .start_date
+        .with_timezone(&nz_tz)
+        .format("%A, %d %b %Y at %l:%M%P")
+        .to_string();
+    let distance_km = (run.distance as f64) / 1e3;
+    // let formatted_moving_time =
+    //     humantime::format_duration(Duration::from_secs(run.moving_time.try_into().unwrap()));
+    let formatted_moving_time = format_time(run.moving_time);
+    let popup_text = format!(
+        "<h3>{formatted_time}</h3><h1>{}</h1>{:.2}km {}",
+        run.name, distance_km, formatted_moving_time
+    );
+
+    let mut properties = serde_json::Map::new();
+    properties.insert("popup_text".into(), serde_json::Value::String(popup_text));
+    properties
+}
+
 /// Fetch recent runs and return them as a GeoJSON `FeatureCollection` of `LineString`s.
 ///
 /// Pass `before` to fetch the following page or pass `None` for the initial load.
@@ -115,31 +162,13 @@ pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns,
     let features = runs
         .iter()
         .map(|run| {
-            let mut properties = serde_json::Map::new();
-            properties.insert(
-                "name".to_string(),
-                serde_json::Value::String(run.name.clone()),
-            );
-            // Future improvements to datetime:
-            // - Use "Today" & "Yesterday" instead of date, if appropriate.
-            // - Don't assume the run is in NZ. Use the timezone that corresponds to the start coordinate.
-            let nz_tz: Tz = "Pacific/Auckland".parse().unwrap();
-            let formatted_time = run
-                .start_date
-                .with_timezone(&nz_tz)
-                .format("%A, %d %b %Y at %l:%M%P")
-                .to_string();
-            properties.insert(
-                "start_date".to_string(),
-                serde_json::Value::String(formatted_time),
-            );
             let coords = decode_line(&run.summary_map);
 
             let run_line = Feature {
                 bbox: None,
                 geometry: Some(Geometry::new(Value::LineString(coords))),
                 id: None,
-                properties: Some(properties),
+                properties: Some(get_properties(run)),
                 foreign_members: None,
             };
             (run.strava_activity_id, run_line)
@@ -186,4 +215,34 @@ pub async fn load_profile() -> Result<comms::athlete::AthleteResponse, LoadError
     resp.json()
         .await
         .map_err(|err| LoadError::Other(format!("Failed to parse profile: {err}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_time;
+
+    #[test]
+    fn format_time_seconds() {
+        assert_eq!(format_time(0), "0s");
+        assert_eq!(format_time(30), "30s");
+    }
+
+    #[test]
+    fn format_time_minutes() {
+        // Seconds shown.
+        assert_eq!(format_time(90), "1m 30s");
+        assert_eq!(format_time(125), "2m 5s");
+        assert_eq!(format_time(3599), "59m 59s");
+        // Exact minute, so no seconds shown.
+        assert_eq!(format_time(120), "2m");
+    }
+
+    #[test]
+    fn format_time_hours() {
+        // 7325s = 2 hours, 2 minutes, 5 seconds. Minutes shown.
+        assert_eq!(format_time(7325), "2h 2m");
+        // Exact hours, so no minutes shown.
+        assert_eq!(format_time(3600), "1h");
+        assert_eq!(format_time(7200), "2h");
+    }
 }

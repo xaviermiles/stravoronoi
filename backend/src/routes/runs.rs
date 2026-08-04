@@ -152,6 +152,8 @@ async fn fetch_older_runs(
                     strava_activity_id: Set(activity.id),
                     athlete_id: Set(athlete_id),
                     name: Set(activity.name.clone()),
+                    distance: Set(activity.distance as i64),
+                    moving_time: Set(activity.moving_time),
                     start_date: Set(activity.start_date.into()),
                     summary_map: Set(activity.map.summary_polyline.clone()),
                     is_first_run: Set(false), // this will updated afterwards.
@@ -273,13 +275,14 @@ pub async fn get_runs(
             } else {
                 StatusCode::PARTIAL_CONTENT
             };
-            // Is there a simpler way to do this?
-            let runs_response: Vec<RunResponse> = runs
-                .iter()
+            let runs_response: Vec<_> = runs
+                .into_iter()
                 .filter_map(|run| {
-                    run.summary_map.clone().map(|summary_map| RunResponse {
+                    run.summary_map.map(|summary_map| RunResponse {
                         strava_activity_id: run.strava_activity_id,
                         name: run.name.clone(),
+                        distance: run.distance,
+                        moving_time: run.moving_time,
                         start_date: *run.start_date,
                         summary_map,
                     })

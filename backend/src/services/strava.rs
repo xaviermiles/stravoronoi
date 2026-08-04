@@ -288,6 +288,10 @@ pub struct SummaryActivity {
     pub id: i64,
     /// The name of the activity.
     pub name: String,
+    /// The activity's distance, in metres.
+    pub distance: f64,
+    /// The activity's moving time, in seconds.
+    pub moving_time: i64,
     /// An instance of SportType.
     pub sport_type: SportType,
     /// The time at which the activity was started.

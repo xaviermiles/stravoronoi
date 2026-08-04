@@ -147,10 +147,8 @@ impl MapEventListener for RunClickListener {
         let Some(properties) = feature.properties else {
             return;
         };
-        let (Some(serde_json::Value::String(name)), Some(serde_json::Value::String(start_date))) =
-            (properties.get("name"), properties.get("start_date"))
-        else {
-            // This shouldn't happen as load_run_lines() always inserts these properties.
+        let Some(serde_json::Value::String(popup_text)) = properties.get("popup_text") else {
+            // This shouldn't happen as strava::get_properties() always inserts this property.
             return;
         };
 
@@ -158,7 +156,7 @@ impl MapEventListener for RunClickListener {
             LngLat::new(e.lng_lat.lng, e.lng_lat.lat),
             mapboxgl::PopupOptions::new(),
         );
-        popup.set_html(format!("<h3>{start_date}</h3><h1>{name}"));
+        popup.set_html(popup_text);
         popup.add_to(&map);
     }
 }
