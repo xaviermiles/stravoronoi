@@ -44,10 +44,10 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                 let tags = tags.unwrap_or_default();
                 for (sequence, node_id) in node_ids.iter().enumerate() {
                     ways.push(models::grid_way::ActiveModel {
-                        way_id: Set(id as i64),
+                        way_id: Set(id),
                         name: Set(tags.get("name").cloned()),
                         sequence: Set(sequence as i32),
-                        node_id: Set(*node_id as i64),
+                        node_id: Set(*node_id),
                     });
                 }
                 for (node_id1, node_id2) in node_ids.iter().zip(node_ids.iter().skip(1)) {

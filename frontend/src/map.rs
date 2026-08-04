@@ -10,6 +10,7 @@ use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
+use web_sys::wasm_bindgen::JsCast;
 use yew::platform::time;
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
@@ -19,11 +20,22 @@ const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 /// Shared handle to the map, populated once the map has been created.
 pub type MapRef = Rc<RefCell<Option<Rc<Map>>>>;
 
+/// Ids of the per-run line layers, shared with the click listener so it can
+/// restrict feature queries to run layers only. Grows as runs are paged in.
+type RunLayerIds = Rc<RefCell<Vec<String>>>;
+
+/// Id of the currently selected (clicked) run layer, if any. Shared with the
+/// click listener so it can restore the previous selection's colour when a
+/// different run, or empty space, is clicked.
+type SelectedRun = Rc<RefCell<Option<String>>>;
+
 /// Strava's brand orange, used for all run lines.
-const RUN_LINE_COLOR: &str = "#fc4c02";
+const RUN_LINE_COLOUR: &str = "#fc4c02";
+/// Use another colour if a run is clicked.
+const SELECTED_RUN_LINE_COLOUR: &str = "#0060d0";
 
 // If the API returns nothing, avoid spamming the backend while it populates.
-const SLOW_CONTINUE_TIME: Duration = Duration::from_secs(1);
+const SLOW_CONTINUE_TIME: Duration = Duration::from_millis(100);
 const FAST_CONTINUE_TIME: Duration = Duration::from_millis(10);
 
 struct Listener {
@@ -37,6 +49,23 @@ impl MapEventListener for Listener {
         wasm_bindgen_futures::spawn_local(async move { add_grid_layers(&grid_map).await });
         // Once the base map style has loaded, fetch the runs and overlay them.
         let on_unauthorized = self.on_unauthorized.clone();
+        // A single map-level click listener, shared with the run layers it filters on.
+        // Registered once here rather than per-run to avoid re-adding listeners in the
+        // paging loop below.
+        let run_layers: RunLayerIds = Rc::new(RefCell::new(Vec::new()));
+        let selected_run: SelectedRun = Rc::new(RefCell::new(None));
+        if let Err(err) = map.on(RunClickListener {
+            run_layers: run_layers.clone(),
+            selected_run,
+        }) {
+            log::error!("Failed to register run click listener: {err:?}");
+        }
+        // Show a pointer cursor while hovering a run line to signal it's clickable.
+        if let Err(err) = map.on(RunHoverListener {
+            run_layers: run_layers.clone(),
+        }) {
+            log::error!("Failed to register run hover listener: {err:?}");
+        }
         wasm_bindgen_futures::spawn_local(async move {
             let mut before: Option<DateTime<Utc>> = None;
             loop {
@@ -52,7 +81,7 @@ impl MapEventListener for Listener {
                         break;
                     }
                 };
-                add_run_layers(&map, loaded_runs.features);
+                add_run_layers(&map, loaded_runs.features, &run_layers);
                 let next_before = match loaded_runs.load_state {
                     LoadState::Continue(next_before) => next_before,
                     LoadState::Finished => break,
@@ -69,24 +98,154 @@ impl MapEventListener for Listener {
     }
 }
 
-/// Add the decoded Strava runs to the map as single-color line layers.
-fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>) {
-    for (run_id, run_line) in run_lines {
-        let layer_id = &run_id.to_string();
-        if let Err(err) = map.add_geojson_source(layer_id, GeoJson::Feature(run_line)) {
+/// Add the decoded Strava runs to the map as single-colour line layers.
+///
+/// Each run gets its own source and layer, keyed by the run id. The layer ids
+/// are recorded in `run_layers` so the shared click listener can restrict its
+/// feature queries to run layers only.
+fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_layers: &RunLayerIds) {
+    for (run_id, mut run_line) in run_lines {
+        let layer_id = run_id.to_string();
+        // Tag the feature with the run id so the click listener can label popups.
+        run_line.id = Some(geojson::feature::Id::Number(run_id.into()));
+        if let Err(err) = map.add_geojson_source(&layer_id, GeoJson::Feature(run_line)) {
             log::error!("Failed to add Strava source: {err:?}");
             continue;
         }
 
-        let mut layer = LineLayer::new(layer_id, layer_id);
-        layer.layout.line_join = Some(LineJoin::Round.into());
-        layer.layout.line_cap = Some(LineCap::Round.into());
-        layer.paint.line_color = Some(RUN_LINE_COLOR.into());
-        layer.paint.line_width = Some(3.0.into());
-
-        if let Err(err) = map.add_layer(layer, None) {
-            log::error!("Failed to add Strava layer: {err:?}");
+        match map.add_layer(run_line_layer(&layer_id, RUN_LINE_COLOUR), None) {
+            Ok(()) => run_layers.borrow_mut().push(layer_id),
+            Err(err) => log::error!("Failed to add Strava layer: {err:?}"),
         }
+    }
+}
+
+/// Build the styled line layer for a single run, coloured `colour`.
+fn run_line_layer(layer_id: &str, colour: &str) -> LineLayer {
+    let mut layer = LineLayer::new(layer_id, layer_id);
+    layer.layout.line_join = Some(LineJoin::Round.into());
+    layer.layout.line_cap = Some(LineCap::Round.into());
+    layer.paint.line_color = Some(colour.into());
+    layer.paint.line_width = Some(3.5.into());
+    layer
+}
+
+/// Recolour an existing run layer by removing and re-adding it. The mapboxgl
+/// wrapper doesn't expose `setPaintProperty`, but the underlying GeoJSON source
+/// persists, so only the (cheap) styling layer is rebuilt. Re-adding also lifts
+/// the layer above the others, keeping the selected run on top.
+fn recolour_run(map: &Map, layer_id: &str, colour: &str) {
+    if map.get_layer(layer_id).is_err() {
+        return;
+    }
+    if let Err(err) = map.remove_layer(layer_id) {
+        log::error!("Failed to remove run layer {layer_id}: {err:?}");
+        return;
+    }
+    if let Err(err) = map.add_layer(run_line_layer(layer_id, colour), None) {
+        log::error!("Failed to re-add run layer {layer_id}: {err:?}");
+    }
+}
+
+/// Single, map-level click listener that shows a popup only when a run line is clicked.
+struct RunClickListener {
+    run_layers: RunLayerIds,
+    selected_run: SelectedRun,
+}
+
+impl MapEventListener for RunClickListener {
+    fn on_click(&mut self, map: Rc<Map>, e: event::MapMouseEvent) {
+        let layers = self.run_layers.borrow().clone();
+
+        let hits = match map.query_rendered_features(
+            Some(e.point.clone()),
+            mapboxgl::QueryFeatureOptions {
+                layers,
+                ..Default::default()
+            },
+        ) {
+            Ok(hits) => hits,
+            Err(err) => {
+                log::error!("Failed to query run features: {err:?}");
+                return;
+            }
+        };
+
+        // No run line under the cursor: deselect the previously selected run, if any.
+        let Some(feature) = hits.into_iter().next() else {
+            if let Some(prev) = self.selected_run.borrow_mut().take() {
+                recolour_run(&map, &prev, RUN_LINE_COLOUR);
+            }
+            return;
+        };
+
+        // The feature id was tagged with the run id, which is also its layer id.
+        let clicked_id = match &feature.id {
+            Some(geojson::feature::Id::Number(n)) => n.to_string(),
+            Some(geojson::feature::Id::String(s)) => s.clone(),
+            None => return,
+        };
+
+        // Highlight the clicked run, restoring the previous selection to orange.
+        {
+            let mut selected = self.selected_run.borrow_mut();
+            if selected.as_deref() != Some(clicked_id.as_str()) {
+                if let Some(prev) = selected.take() {
+                    recolour_run(&map, &prev, RUN_LINE_COLOUR);
+                }
+                recolour_run(&map, &clicked_id, SELECTED_RUN_LINE_COLOUR);
+                *selected = Some(clicked_id);
+            }
+        }
+
+        let Some(properties) = feature.properties else {
+            return;
+        };
+        let Some(serde_json::Value::String(popup_text)) = properties.get("popup_text") else {
+            // This shouldn't happen as strava::get_properties() always inserts this property.
+            return;
+        };
+
+        let popup = mapboxgl::Popup::new(
+            LngLat::new(e.lng_lat.lng, e.lng_lat.lat),
+            mapboxgl::PopupOptions::new(),
+        );
+        popup.set_html(popup_text);
+        popup.add_to(&map);
+    }
+}
+
+/// Single, map-level listener that shows a pointer cursor while hovering a run line,
+/// signalling that it can be clicked. Mirrors `RunClickListener` by filtering the
+/// feature query to the run layers only.
+struct RunHoverListener {
+    run_layers: RunLayerIds,
+}
+
+impl MapEventListener for RunHoverListener {
+    fn on_mousemove(&mut self, map: Rc<Map>, e: event::MapMouseEvent) {
+        let layers = self.run_layers.borrow().clone();
+        let over_run = map
+            .query_rendered_features(
+                Some(e.point.clone()),
+                mapboxgl::QueryFeatureOptions {
+                    layers,
+                    ..Default::default()
+                },
+            )
+            .map(|hits| !hits.is_empty())
+            .unwrap_or(false);
+        set_cursor(&map, if over_run { "pointer" } else { "" });
+    }
+}
+
+/// Set the CSS cursor on the map canvas. An empty string restores the default
+/// (grab/drag) cursor that Mapbox manages.
+fn set_cursor(map: &Map, cursor: &str) {
+    if let Ok(Some(canvas)) = map.get_container().query_selector(".mapboxgl-canvas")
+        && let Ok(canvas) = canvas.dyn_into::<web_sys::HtmlElement>()
+    {
+        let _ = canvas.style().set_property("cursor", cursor);
     }
 }
 
@@ -182,7 +341,7 @@ fn add_grid_layer_styles(map: &Map) {
         let mut lines = LineLayer::new("polygons", "polygons");
         lines.layout.line_join = Some(LineJoin::Round.into());
         lines.layout.line_cap = Some(LineCap::Round.into());
-        lines.paint.line_color = Some(RUN_LINE_COLOR.into());
+        lines.paint.line_color = Some(RUN_LINE_COLOUR.into());
         lines.paint.line_width = Some(3.0.into());
         if let Err(err) = map.add_layer(lines, None) {
             log::error!("Failed to add polygons layer: {err:?}");
@@ -210,10 +369,10 @@ pub fn set_grid_visible(map: &Map, visible: bool) {
         add_grid_layer_styles(map);
     } else {
         for id in GRID_LAYER_IDS {
-            if map.get_layer(id).is_ok() {
-                if let Err(err) = map.remove_layer(id) {
-                    log::error!("Failed to remove grid layer {id}: {err:?}");
-                }
+            if map.get_layer(id).is_ok()
+                && let Err(err) = map.remove_layer(id)
+            {
+                log::error!("Failed to remove grid layer {id}: {err:?}");
             }
         }
     }
