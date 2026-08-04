@@ -10,10 +10,10 @@ use mapboxgl::style::Sources;
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
+use web_sys::wasm_bindgen::JsCast;
 use yew::platform::time;
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
-use web_sys::wasm_bindgen::JsCast;
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 
@@ -24,8 +24,15 @@ pub type MapRef = Rc<RefCell<Option<Rc<Map>>>>;
 /// restrict feature queries to run layers only. Grows as runs are paged in.
 type RunLayerIds = Rc<RefCell<Vec<String>>>;
 
+/// Id of the currently selected (clicked) run layer, if any. Shared with the
+/// click listener so it can restore the previous selection's colour when a
+/// different run, or empty space, is clicked.
+type SelectedRun = Rc<RefCell<Option<String>>>;
+
 /// Strava's brand orange, used for all run lines.
 const RUN_LINE_COLOUR: &str = "#fc4c02";
+/// Use another colour if a run is clicked.
+const SELECTED_RUN_LINE_COLOUR: &str = "#0060d0";
 
 // If the API returns nothing, avoid spamming the backend while it populates.
 const SLOW_CONTINUE_TIME: Duration = Duration::from_millis(100);
@@ -46,8 +53,10 @@ impl MapEventListener for Listener {
         // Registered once here rather than per-run to avoid re-adding listeners in the
         // paging loop below.
         let run_layers: RunLayerIds = Rc::new(RefCell::new(Vec::new()));
+        let selected_run: SelectedRun = Rc::new(RefCell::new(None));
         if let Err(err) = map.on(RunClickListener {
             run_layers: run_layers.clone(),
+            selected_run,
         }) {
             log::error!("Failed to register run click listener: {err:?}");
         }
@@ -104,22 +113,44 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_layers: &RunLay
             continue;
         }
 
-        let mut layer = LineLayer::new(&layer_id, &layer_id);
-        layer.layout.line_join = Some(LineJoin::Round.into());
-        layer.layout.line_cap = Some(LineCap::Round.into());
-        layer.paint.line_color = Some(RUN_LINE_COLOUR.into());
-        layer.paint.line_width = Some(3.0.into());
-
-        match map.add_layer(layer, None) {
+        match map.add_layer(run_line_layer(&layer_id, RUN_LINE_COLOUR), None) {
             Ok(()) => run_layers.borrow_mut().push(layer_id),
             Err(err) => log::error!("Failed to add Strava layer: {err:?}"),
         }
     }
 }
 
+/// Build the styled line layer for a single run, coloured `colour`.
+fn run_line_layer(layer_id: &str, colour: &str) -> LineLayer {
+    let mut layer = LineLayer::new(layer_id, layer_id);
+    layer.layout.line_join = Some(LineJoin::Round.into());
+    layer.layout.line_cap = Some(LineCap::Round.into());
+    layer.paint.line_color = Some(colour.into());
+    layer.paint.line_width = Some(3.5.into());
+    layer
+}
+
+/// Recolour an existing run layer by removing and re-adding it. The mapboxgl
+/// wrapper doesn't expose `setPaintProperty`, but the underlying GeoJSON source
+/// persists, so only the (cheap) styling layer is rebuilt. Re-adding also lifts
+/// the layer above the others, keeping the selected run on top.
+fn recolour_run(map: &Map, layer_id: &str, colour: &str) {
+    if map.get_layer(layer_id).is_err() {
+        return;
+    }
+    if let Err(err) = map.remove_layer(layer_id) {
+        log::error!("Failed to remove run layer {layer_id}: {err:?}");
+        return;
+    }
+    if let Err(err) = map.add_layer(run_line_layer(layer_id, colour), None) {
+        log::error!("Failed to re-add run layer {layer_id}: {err:?}");
+    }
+}
+
 /// Single, map-level click listener that shows a popup only when a run line is clicked.
 struct RunClickListener {
     run_layers: RunLayerIds,
+    selected_run: SelectedRun,
 }
 
 impl MapEventListener for RunClickListener {
@@ -140,10 +171,33 @@ impl MapEventListener for RunClickListener {
             }
         };
 
-        // No run line under the cursor: the click wasn't on a run, so do nothing.
+        // No run line under the cursor: deselect the previously selected run, if any.
         let Some(feature) = hits.into_iter().next() else {
+            if let Some(prev) = self.selected_run.borrow_mut().take() {
+                recolour_run(&map, &prev, RUN_LINE_COLOUR);
+            }
             return;
         };
+
+        // The feature id was tagged with the run id, which is also its layer id.
+        let clicked_id = match &feature.id {
+            Some(geojson::feature::Id::Number(n)) => n.to_string(),
+            Some(geojson::feature::Id::String(s)) => s.clone(),
+            None => return,
+        };
+
+        // Highlight the clicked run, restoring the previous selection to orange.
+        {
+            let mut selected = self.selected_run.borrow_mut();
+            if selected.as_deref() != Some(clicked_id.as_str()) {
+                if let Some(prev) = selected.take() {
+                    recolour_run(&map, &prev, RUN_LINE_COLOUR);
+                }
+                recolour_run(&map, &clicked_id, SELECTED_RUN_LINE_COLOUR);
+                *selected = Some(clicked_id);
+            }
+        }
+
         let Some(properties) = feature.properties else {
             return;
         };
