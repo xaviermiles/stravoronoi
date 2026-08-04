@@ -4,7 +4,9 @@ use axum::{
     routing::{get, post},
 };
 use sea_orm::DatabaseConnection;
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tower_http::cors::CorsLayer;
@@ -37,6 +39,11 @@ struct AppState {
     ///
     /// If false, it is still seeding.
     is_grid_ready: Arc<AtomicBool>,
+    /// Athlete IDs that currently have a background run backfill in progress.
+    ///
+    /// Used to ensure only one backfill runs per athlete at a time, so repeated
+    /// initial requests from the frontend don't each spawn a duplicate fetch.
+    backfilling_athletes: Arc<Mutex<HashSet<i64>>>,
 }
 
 async fn init_app_state() -> AppState {
@@ -47,6 +54,7 @@ async fn init_app_state() -> AppState {
     let state = AppState {
         database,
         is_grid_ready: is_grid_ready.clone(),
+        backfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
     };
 
     // Seed the road grid without blocking.

@@ -13,6 +13,8 @@ use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
 use sea_orm::{ActiveModelTrait, QueryOrder, Select};
 use serde::Deserialize;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, sleep};
 
 use crate::services::strava::FetchError;
@@ -26,6 +28,23 @@ const POLYLINE_PRECISION: u32 = 5;
 // minutes and per 1 day, but it doesn't hurt since we will wait between requests anyway.
 const START_WAIT: Duration = Duration::from_millis(100);
 const MAX_WAIT: Duration = Duration::from_secs(2);
+
+/// Removes an athlete from the in-flight backfill set when dropped.
+///
+/// Holding this in the spawned backfill task guarantees the athlete is cleared
+/// once the task finishes, whether it returns normally, errors, or panics.
+struct BackfillGuard {
+    athletes: Arc<Mutex<HashSet<i64>>>,
+    athlete_id: i64,
+}
+
+impl Drop for BackfillGuard {
+    fn drop(&mut self) {
+        if let Ok(mut athletes) = self.athletes.lock() {
+            athletes.remove(&self.athlete_id);
+        }
+    }
+}
 
 // TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
 //       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
@@ -113,7 +132,10 @@ async fn fetch_older_runs(
             }
             Err(FetchError::Other(message)) => return Err(message),
         };
-        tracing::info!("Fetched {} activities for athlete_id={athlete_id} and before_epoch={before_epoch:?}", activities.len());
+        tracing::info!(
+            "Fetched {} activities for athlete_id={athlete_id} and before_epoch={before_epoch:?}",
+            activities.len()
+        );
         // Reset wait since we weren't told to backoff.
         current_wait = START_WAIT;
         before_epoch = match activities.last() {
@@ -136,9 +158,7 @@ async fn fetch_older_runs(
                 }
             })
             .collect();
-        // In practice it seems like the "before_epoch" is inclusive, so there will be some conflicts while paging.
         models::run::Entity::insert_many(runs)
-            .on_conflict_do_nothing()
             .exec(database)
             .await
             .map_err(|err| format!("Error while inserting runs: {err}"))?;
@@ -161,9 +181,7 @@ async fn fetch_older_runs(
 
 /// Return a query to find the runs for a given athlete.
 fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
-    models::run::Entity::find()
-        .filter(models::run::COLUMN.athlete_id.eq(athlete_id))
-        
+    models::run::Entity::find().filter(models::run::COLUMN.athlete_id.eq(athlete_id))
 }
 
 /// Return a query to find the final downloaded run for a given athlete, as per the start date.
@@ -173,7 +191,11 @@ async fn find_final_downloaded_run(
     database: &DatabaseConnection,
     athlete_id: i64,
 ) -> Option<models::run::Model> {
-    find_runs(athlete_id).order_by_asc(models::run::COLUMN.start_date).one(database).await.unwrap()
+    find_runs(athlete_id)
+        .order_by_asc(models::run::COLUMN.start_date)
+        .one(database)
+        .await
+        .unwrap()
 }
 
 #[derive(Deserialize)]
@@ -209,10 +231,22 @@ pub async fn get_runs(
         }
         None => {
             // Assume this is the first of multiple paginated requests from the frontend.
-            // Only need to fetch older runs if the backfill hasn't already completed.
-            if !backfill_complete {
+            // Only need to fetch older runs if the backfill hasn't already completed and there
+            // isn't an existing backfill in-flight.
+            let should_backfill = !backfill_complete
+                && state
+                    .backfilling_athletes
+                    .lock()
+                    .expect("backfill set mutex poisoned")
+                    .insert(athlete.athlete_id);
+            if should_backfill {
                 let before_epoch = oldest_downloaded_run.map(|run| *run.start_date);
+                let guard = BackfillGuard {
+                    athletes: state.backfilling_athletes.clone(),
+                    athlete_id: athlete.athlete_id,
+                };
                 tokio::spawn(async move {
+                    let _guard = guard;
                     let database = models::connect_database()
                         .await
                         .expect("need a database connection");
