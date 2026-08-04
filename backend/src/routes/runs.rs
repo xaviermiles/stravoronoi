@@ -113,6 +113,7 @@ async fn fetch_older_runs(
             }
             Err(FetchError::Other(message)) => return Err(message),
         };
+        tracing::info!("Fetched {} activities for athlete_id={athlete_id} and before_epoch={before_epoch:?}", activities.len());
         // Reset wait since we weren't told to backoff.
         current_wait = START_WAIT;
         before_epoch = match activities.last() {
@@ -152,6 +153,8 @@ async fn fetch_older_runs(
             .update(database)
             .await
             .map_err(|err| format!("Updating final activity: {err}"))?;
+    } else {
+        tracing::warn!("No final downloaded run found - does this user have no runs?")
     }
     Ok(())
 }
@@ -160,7 +163,7 @@ async fn fetch_older_runs(
 fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
     models::run::Entity::find()
         .filter(models::run::COLUMN.athlete_id.eq(athlete_id))
-        .order_by_desc(models::run::COLUMN.start_date)
+        
 }
 
 /// Return a query to find the final downloaded run for a given athlete, as per the start date.
@@ -170,7 +173,7 @@ async fn find_final_downloaded_run(
     database: &DatabaseConnection,
     athlete_id: i64,
 ) -> Option<models::run::Model> {
-    find_runs(athlete_id).one(database).await.unwrap()
+    find_runs(athlete_id).order_by_asc(models::run::COLUMN.start_date).one(database).await.unwrap()
 }
 
 #[derive(Deserialize)]
@@ -185,21 +188,30 @@ pub async fn get_runs(
     Query(params): Query<RunQuery>,
 ) -> Response {
     // TODO: fetch newer activities.
-    let mut athlete_runs = find_runs(athlete.athlete_id);
+    let mut athlete_runs =
+        find_runs(athlete.athlete_id).order_by_desc(models::run::COLUMN.start_date);
+
+    // The oldest downloaded run tells us whether the full history has been
+    // backfilled: its `is_first_run` flag is only set once Strava has returned
+    // an empty page, meaning there is nothing older left to fetch. We read it up
+    // front so the status code below can be decided from athlete-wide state
+    // rather than from whichever page happens to be returned (which races with
+    // the background backfill flagging the oldest run).
+    let oldest_downloaded_run =
+        find_final_downloaded_run(&state.database, athlete.athlete_id).await;
+    let backfill_complete = oldest_downloaded_run
+        .as_ref()
+        .is_some_and(|run| run.is_first_run);
+
     match params.before {
         Some(before_epoch) => {
             athlete_runs = athlete_runs.filter(models::run::COLUMN.start_date.lt(before_epoch))
         }
         None => {
             // Assume this is the first of multiple paginated requests from the frontend.
-            let final_run = find_final_downloaded_run(&state.database, athlete.athlete_id).await;
-            // Only need to fetch older runs if there isn't the "final" activity.
-            let has_first_run = match &final_run {
-                Some(run) => run.is_first_run,
-                None => false,
-            };
-            if !has_first_run {
-                let before_epoch = final_run.map(|run| *run.start_date);
+            // Only need to fetch older runs if the backfill hasn't already completed.
+            if !backfill_complete {
+                let before_epoch = oldest_downloaded_run.map(|run| *run.start_date);
                 tokio::spawn(async move {
                     let database = models::connect_database()
                         .await
@@ -216,7 +228,12 @@ pub async fn get_runs(
     match athlete_runs.limit(10).all(&state.database).await {
         Ok(runs) => {
             let status_code = if runs.is_empty() {
-                StatusCode::NO_CONTENT
+                if backfill_complete {
+                    // There is nothing more to poll for.
+                    StatusCode::OK
+                } else {
+                    StatusCode::NO_CONTENT
+                }
             } else if runs[runs.len() - 1].is_first_run {
                 StatusCode::OK
             } else {
