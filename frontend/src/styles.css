@@ -72,7 +72,7 @@ button[data-key="log-in"] {
 #grid-toggle {
     position: absolute;
     right: max(var(--control-edge), env(safe-area-inset-right));
-    bottom: calc(32px + env(safe-area-inset-bottom));
+    bottom: max(var(--control-edge), env(safe-area-inset-bottom));
     z-index: 2;
     display: flex;
     align-items: center;
