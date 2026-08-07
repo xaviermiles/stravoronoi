@@ -21,7 +21,7 @@ fn app() -> Html {
 
     html! {
       <div id="container">
-        <div id="map" style="width: 100vw; height: 100vh;"></div>
+        <div id="map"></div>
         <LoginButton logged_in={auth.logged_in} profile={auth.profile} />
         <GridToggle map={map} />
       </div>

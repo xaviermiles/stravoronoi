@@ -15,14 +15,17 @@ use yew::platform::time;
 use yew::prelude::*;
 use yew::{use_effect_with_deps, use_mut_ref};
 
+mod hit_testing;
+use hit_testing::distance_to_run_squared;
+
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 
 /// Shared handle to the map, populated once the map has been created.
 pub type MapRef = Rc<RefCell<Option<Rc<Map>>>>;
 
-/// Ids of the per-run line layers, shared with the click listener so it can
-/// restrict feature queries to run layers only. Grows as runs are paged in.
-type RunLayerIds = Rc<RefCell<Vec<String>>>;
+/// Ids of the per-run hit-area layers, shared with the map listeners so they
+/// only query interactive run geometry. Grows as runs are paged in.
+type RunHitLayerIds = Rc<RefCell<Vec<String>>>;
 
 /// Id of the currently selected (clicked) run layer, if any. Shared with the
 /// click listener so it can restore the previous selection's colour when a
@@ -33,6 +36,8 @@ type SelectedRun = Rc<RefCell<Option<String>>>;
 const RUN_LINE_COLOUR: &str = "#fc4c02";
 /// Use another colour if a run is clicked.
 const SELECTED_RUN_LINE_COLOUR: &str = "#0060d0";
+/// Width of the transparent companion layer used for touch hit testing.
+const RUN_HIT_WIDTH: f64 = 20.0;
 
 // If the API returns nothing, avoid spamming the backend while it populates.
 const SLOW_CONTINUE_TIME: Duration = Duration::from_millis(100);
@@ -52,17 +57,17 @@ impl MapEventListener for Listener {
         // A single map-level click listener, shared with the run layers it filters on.
         // Registered once here rather than per-run to avoid re-adding listeners in the
         // paging loop below.
-        let run_layers: RunLayerIds = Rc::new(RefCell::new(Vec::new()));
+        let run_hit_layers: RunHitLayerIds = Rc::new(RefCell::new(Vec::new()));
         let selected_run: SelectedRun = Rc::new(RefCell::new(None));
         if let Err(err) = map.on(RunClickListener {
-            run_layers: run_layers.clone(),
+            run_hit_layers: run_hit_layers.clone(),
             selected_run,
         }) {
             log::error!("Failed to register run click listener: {err:?}");
         }
         // Show a pointer cursor while hovering a run line to signal it's clickable.
         if let Err(err) = map.on(RunHoverListener {
-            run_layers: run_layers.clone(),
+            run_hit_layers: run_hit_layers.clone(),
         }) {
             log::error!("Failed to register run hover listener: {err:?}");
         }
@@ -81,7 +86,7 @@ impl MapEventListener for Listener {
                         break;
                     }
                 };
-                add_run_layers(&map, loaded_runs.features, &run_layers);
+                add_run_layers(&map, loaded_runs.features, &run_hit_layers);
                 let next_before = match loaded_runs.load_state {
                     LoadState::Continue(next_before) => next_before,
                     LoadState::Finished => break,
@@ -103,9 +108,10 @@ impl MapEventListener for Listener {
 /// Each run gets its own source and layer, keyed by the run id. The layer ids
 /// are recorded in `run_layers` so the shared click listener can restrict its
 /// feature queries to run layers only.
-fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_layers: &RunLayerIds) {
+fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_hit_layers: &RunHitLayerIds) {
     for (run_id, mut run_line) in run_lines {
         let layer_id = run_id.to_string();
+        let hit_layer_id = format!("{layer_id}-hit-area");
         // Tag the feature with the run id so the click listener can label popups.
         run_line.id = Some(geojson::feature::Id::Number(run_id.into()));
         if let Err(err) = map.add_geojson_source(&layer_id, GeoJson::Feature(run_line)) {
@@ -113,10 +119,15 @@ fn add_run_layers(map: &Map, run_lines: Vec<(i64, Feature)>, run_layers: &RunLay
             continue;
         }
 
-        match map.add_layer(run_line_layer(&layer_id, RUN_LINE_COLOUR), None) {
-            Ok(()) => run_layers.borrow_mut().push(layer_id),
-            Err(err) => log::error!("Failed to add Strava layer: {err:?}"),
+        if let Err(err) = map.add_layer(run_line_layer(&layer_id, RUN_LINE_COLOUR), None) {
+            log::error!("Failed to add Strava layer: {err:?}");
+            continue;
         }
+        if let Err(err) = map.add_layer(run_hit_layer(&hit_layer_id, &layer_id), None) {
+            log::error!("Failed to add Strava hit-area layer: {err:?}");
+            continue;
+        }
+        run_hit_layers.borrow_mut().push(hit_layer_id);
     }
 }
 
@@ -127,6 +138,16 @@ fn run_line_layer(layer_id: &str, colour: &str) -> LineLayer {
     layer.layout.line_cap = Some(LineCap::Round.into());
     layer.paint.line_color = Some(colour.into());
     layer.paint.line_width = Some(3.5.into());
+    layer
+}
+
+/// Build the invisible layer that acts as a proxy for hit tests for a given run line.
+fn run_hit_layer(layer_id: &str, source_id: &str) -> LineLayer {
+    let mut layer = LineLayer::new(layer_id, source_id);
+    layer.layout.line_join = Some(LineJoin::Round.into());
+    layer.layout.line_cap = Some(LineCap::Round.into());
+    layer.paint.line_color = Some("rgba(0, 0, 0, 0)".into());
+    layer.paint.line_width = Some(RUN_HIT_WIDTH.into());
     layer
 }
 
@@ -149,13 +170,13 @@ fn recolour_run(map: &Map, layer_id: &str, colour: &str) {
 
 /// Single, map-level click listener that shows a popup only when a run line is clicked.
 struct RunClickListener {
-    run_layers: RunLayerIds,
+    run_hit_layers: RunHitLayerIds,
     selected_run: SelectedRun,
 }
 
 impl MapEventListener for RunClickListener {
     fn on_click(&mut self, map: Rc<Map>, e: event::MapMouseEvent) {
-        let layers = self.run_layers.borrow().clone();
+        let layers = self.run_hit_layers.borrow().clone();
 
         let hits = match map.query_rendered_features(
             Some(e.point.clone()),
@@ -171,8 +192,13 @@ impl MapEventListener for RunClickListener {
             }
         };
 
-        // No run line under the cursor: deselect the previously selected run, if any.
-        let Some(feature) = hits.into_iter().next() else {
+        let tap_lng_lat = [e.lng_lat.lng, e.lng_lat.lat];
+        let Some(feature) = hits.into_iter().min_by(|left, right| {
+            let left_distance = distance_to_run_squared(left, &tap_lng_lat).unwrap_or(f64::MAX);
+            let right_distance = distance_to_run_squared(right, &tap_lng_lat).unwrap_or(f64::MAX);
+            left_distance.total_cmp(&right_distance)
+        }) else {
+            // No run line under the cursor: deselect the previously selected run, if any.
             if let Some(prev) = self.selected_run.borrow_mut().take() {
                 recolour_run(&map, &prev, RUN_LINE_COLOUR);
             }
@@ -219,12 +245,12 @@ impl MapEventListener for RunClickListener {
 /// signalling that it can be clicked. Mirrors `RunClickListener` by filtering the
 /// feature query to the run layers only.
 struct RunHoverListener {
-    run_layers: RunLayerIds,
+    run_hit_layers: RunHitLayerIds,
 }
 
 impl MapEventListener for RunHoverListener {
     fn on_mousemove(&mut self, map: Rc<Map>, e: event::MapMouseEvent) {
-        let layers = self.run_layers.borrow().clone();
+        let layers = self.run_hit_layers.borrow().clone();
         let over_run = map
             .query_rendered_features(
                 Some(e.point.clone()),
@@ -341,7 +367,9 @@ fn add_grid_layer_styles(map: &Map) {
         let mut lines = LineLayer::new("polygons", "polygons");
         lines.layout.line_join = Some(LineJoin::Round.into());
         lines.layout.line_cap = Some(LineCap::Round.into());
-        lines.paint.line_color = Some(RUN_LINE_COLOUR.into());
+        // This colour is borrowed to be visually distinct to the unselected run lines, so the
+        // polygons are somewhat viewable at the same time as runs.
+        lines.paint.line_color = Some(SELECTED_RUN_LINE_COLOUR.into());
         lines.paint.line_width = Some(3.0.into());
         if let Err(err) = map.add_layer(lines, None) {
             log::error!("Failed to add polygons layer: {err:?}");

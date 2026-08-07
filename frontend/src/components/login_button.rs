@@ -42,10 +42,7 @@ pub fn LoginButton(props: &LoginButtonProps) -> Html {
     };
 
     html! {
-        <div>
-            <button data-key="log-in" onclick={onclick}>
-                {button_text}
-            </button>
+        <div id="auth-controls">
             if let Some(profile) = &props.profile {
                 <img
                 id="user-icon"
@@ -53,6 +50,9 @@ pub fn LoginButton(props: &LoginButtonProps) -> Html {
                 title={profile.username.clone()}
                 alt="Profile picture" />
             }
+            <button data-key="log-in" onclick={onclick}>
+                {button_text}
+            </button>
         </div>
     }
 }
