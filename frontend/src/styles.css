@@ -3,52 +3,137 @@
     display: none;
 }
 
-/* Login/logout button styled to look similar to the login button on the strava website. */
-button {
+:root {
+    --control-edge: 12px;
+    --control-border: #b7bcc3;
+    --control-shadow: 0 2px 10px rgb(20 28 38 / 18%);
+    --control-text: #20252b;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+
+#container {
+    position: relative;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+}
+
+#map {
     position: absolute;
-    display: block;
-    top: 10px;
-    min-height: 40px;
-    padding: 6px 16px;
-    right: 10px;
-    z-index: 1;
-    border: 1px solid gray;
+    inset: 0;
+}
+
+#auth-controls {
+    position: absolute;
+    top: max(var(--control-edge), env(safe-area-inset-top));
+    right: max(var(--control-edge), env(safe-area-inset-right));
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Login/logout button styled to look similar to the login button on the Strava website. */
+button[data-key="log-in"] {
+    min-height: 44px;
+    padding: 8px 16px;
+    border: 1px solid var(--control-border);
     font-weight: 600;
     background-color: white;
     font-size: 14px;
     border-radius: 4px;
+    box-shadow: var(--control-shadow);
+    color: var(--control-text);
     cursor: pointer;
-    font-family: "Boathouse,Segoe UI,Helvetica Neue,-apple-system,system-ui,BlinkMacSystemFont,Roboto,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol;"
+    touch-action: manipulation;
+    font-family: "Aptos", "Segoe UI", sans-serif;
 }
 
 /* Profile picture shown when logged in. */
 #user-icon {
-    position: absolute;
-    top: 10px;
-    right: 100px;
-    z-index: 1;
-    width: 40px;
-    height: 40px;
+    width: 44px;
+    height: 44px;
+    box-sizing: border-box;
+    border: 2px solid white;
     border-radius: 50%;
+    box-shadow: var(--control-shadow);
     object-fit: cover;
 }
 
 /* Checkbox overlay toggling the debug road-grid overlay. */
 #grid-toggle {
     position: absolute;
-    bottom: 10px;
-    right: 10px;
-    z-index: 1;
+    right: max(var(--control-edge), env(safe-area-inset-right));
+    bottom: calc(32px + env(safe-area-inset-bottom));
+    z-index: 2;
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: 8px;
+    min-height: 44px;
+    max-width: calc(100vw - (2 * var(--control-edge)));
+    box-sizing: border-box;
+    padding: 7px 12px;
     background-color: white;
     border-radius: 4px;
-    border: 1px solid gray;
-    font-family: "Boathouse,Segoe UI,Helvetica Neue,-apple-system,system-ui,BlinkMacSystemFont,Roboto,Arial,sans-serif,Apple Color Emoji,Segoe UI Emoji,Segoe UI Symbol;";
-    font-size: 12px;
+    border: 1px solid var(--control-border);
+    box-shadow: var(--control-shadow);
+    color: var(--control-text);
+    font-family: "Aptos", "Segoe UI", sans-serif;
+    font-size: 13px;
+    line-height: 1.25;
     font-weight: 600;
     cursor: pointer;
+    touch-action: manipulation;
     user-select: none;
+    white-space: pre-line;
+}
+
+#grid-toggle input {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: #fc4c02;
+}
+
+button[data-key="log-in"]:focus-visible,
+#grid-toggle:has(input:focus-visible) {
+    outline: 3px solid #0060d0;
+    outline-offset: 2px;
+}
+
+@media (hover: hover) {
+
+    button[data-key="log-in"]:hover,
+    #grid-toggle:hover {
+        background-color: #f5f6f7;
+        border-color: #858b93;
+    }
+}
+
+@media (max-width: 480px) {
+    :root {
+        --control-edge: 8px;
+    }
+
+    #auth-controls {
+        gap: 6px;
+    }
+
+    button[data-key="log-in"] {
+        padding-inline: 14px;
+    }
+
+    #grid-toggle {
+        padding-inline: 10px;
+        font-size: 12px;
+    }
 }
