@@ -2,6 +2,7 @@
 use crate::models::{grid_cell, grid_node, grid_way};
 use crate::services::overpass::{self, OsmElement};
 use boostvoronoi::prelude::*;
+use geo_types::{Coord, LineString, Polygon};
 use geojson::Feature;
 use geojson::Geometry;
 use geojson::Value;
@@ -108,13 +109,17 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
         let Some(way_id) = feature_way_id(&way) else {
             continue;
         };
-        if way.property("name").and_then(|name| name.as_str()) != Some("Oxford Terrace") {
+        // Only include "Oxford Terrace" ways to limit the scale for now.
+        let Some(name) = way.property("name") else {
+            continue;
+        };
+        if name.as_str() != Some("Oxford Terrace") {
             continue;
         }
         let Some(geometry) = &way.geometry else {
             continue;
         };
-        let geojson::Value::LineString(coords) = &geometry.value else {
+        let Value::LineString(coords) = &geometry.value else {
             continue;
         };
         for segment in get_segment_pairs(coords) {
@@ -128,8 +133,8 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
         .unwrap()
         .build()
         .unwrap();
-    let mut polygons: HashMap<i64, geo_types::Polygon<f64>> = HashMap::new();
-    for (index, cell) in diagram.cells().iter().enumerate() {
+    let mut polygons: HashMap<i64, Vec<Polygon<f64>>> = HashMap::new();
+    for cell in diagram.cells().iter() {
         // combine continue/filter & map into a single iter operation?
         if diagram
             .cell_edge_iterator(cell.id())
@@ -143,7 +148,10 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
                 let edge = diagram.edge(edge_index).unwrap();
                 let vertex_index = edge.vertex0().expect("filtered out None above");
                 let vertex = diagram.vertex(vertex_index).unwrap();
-                vec![vertex.x() / SCALING_FACTOR, vertex.y() / SCALING_FACTOR]
+                Coord {
+                    x: vertex.x() / SCALING_FACTOR,
+                    y: vertex.y() / SCALING_FACTOR,
+                }
             })
             .collect();
         // Map the cell back to the way whose segment created it. All cells a
@@ -152,17 +160,26 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
             tracing::error!("Unrecognised cell source index.");
             continue;
         };
-        let polygon = geo_types::Polygon::new(vec![cell_coords], vec![]);
+        let polygon = Polygon::new(LineString(cell_coords), vec![]);
         polygons.entry(way_id).or_default().push(polygon);
     }
 
-    let polygons_database = polygons.iter().map(|(way_id, polygon_cells)|) {
-        grid_cell::ActiveModel {
-            way_id: Set(way_id),
-            geojson: geo::algorithm::unary_union(polygon_cells),
-        }
-        }).collect();
-    for cell_chunk in polygons.chunks(INSERT_CHUNK) {
+    let polygons_database: Vec<_> = polygons
+        .into_iter()
+        .map(|(way_id, polygon_cells)| {
+            let merged_polygons = geo::algorithm::unary_union(&polygon_cells);
+            let feature = Feature {
+                id: Some(Id::Number(way_id.into())),
+                geometry: Some(Geometry::new(Value::from(&merged_polygons))),
+                ..Default::default()
+            };
+            grid_cell::ActiveModel {
+                way_id: Set(way_id),
+                geojson: Set(feature.to_string()),
+            }
+        })
+        .collect();
+    for cell_chunk in polygons_database.chunks(INSERT_CHUNK) {
         grid_cell::Entity::insert_many(cell_chunk.to_vec())
             .exec(database)
             .await
