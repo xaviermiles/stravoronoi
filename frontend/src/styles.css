@@ -3,6 +3,11 @@
     display: none;
 }
 
+/* Hide the close button in popups. */
+.mapboxgl-popup-close-button {
+    display: none;
+}
+
 :root {
     --control-edge: 12px;
     --control-border: #b7bcc3;
