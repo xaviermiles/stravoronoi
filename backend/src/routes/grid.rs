@@ -45,7 +45,7 @@ pub async fn get_ways(State(state): State<AppState>) -> Response {
     // Chunk by way_id to create a LineString feature for each way.
     let features = ways
         .chunk_by(|a, b| a.0.way_id == b.0.way_id)
-        .filter_map(|chunk| {
+        .map(|chunk| {
             let coords: Vec<Vec<f64>> = chunk
                 .iter()
                 .filter_map(|(_, node)| node.as_ref())
@@ -61,12 +61,12 @@ pub async fn get_ways(State(state): State<AppState>) -> Response {
             if let Some(name) = &way.name {
                 properties.insert("name".to_string(), serde_json::Value::String(name.clone()));
             }
-            Some(Feature {
+            Feature {
                 id: Some(Id::Number(way.way_id.into())),
                 geometry: Some(Geometry::new(Value::LineString(coords))),
                 properties: Some(properties),
                 ..Default::default()
-            })
+            }
         })
         .collect();
 
