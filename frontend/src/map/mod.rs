@@ -367,7 +367,9 @@ fn add_grid_layer_styles(map: &Map) {
         let mut lines = LineLayer::new("polygons", "polygons");
         lines.layout.line_join = Some(LineJoin::Round.into());
         lines.layout.line_cap = Some(LineCap::Round.into());
-        lines.paint.line_color = Some(RUN_LINE_COLOUR.into());
+        // This colour is borrowed to be visually distinct to the unselected run lines, so the
+        // polygons are somewhat viewable at the same time as runs.
+        lines.paint.line_color = Some(SELECTED_RUN_LINE_COLOUR.into());
         lines.paint.line_width = Some(3.0.into());
         if let Err(err) = map.add_layer(lines, None) {
             log::error!("Failed to add polygons layer: {err:?}");
