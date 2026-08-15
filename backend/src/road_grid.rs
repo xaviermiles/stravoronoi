@@ -258,9 +258,10 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             .map_err(|err| format!("Failed to insert way nodes: {err}"))?;
     }
 
+    // Intersection nodes also includes the nodes at a dead end.
     let intersection_ids: Vec<_> = node_to_nodes
         .into_iter()
-        .filter(|(_node, other_nodes)| other_nodes.len() > 2)
+        .filter(|(_node, other_nodes)| other_nodes.len() != 2)
         .map(|(node, _other_nodes)| node)
         .collect();
 
