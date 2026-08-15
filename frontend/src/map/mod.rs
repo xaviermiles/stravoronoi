@@ -3,10 +3,10 @@ use crate::components::grid_toggle::get_show_grid_storage_value;
 use crate::strava::{self, LoadState};
 use chrono::{DateTime, Utc};
 use geojson::{Feature, GeoJson};
-use mapboxgl::Source;
 use mapboxgl::layer::{CircleLayer, IntoLayer, Layer, RasterLayer};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 use mapboxgl::style::Sources;
+use mapboxgl::{FillLayer, Source};
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
@@ -293,22 +293,38 @@ async fn add_grid_layers(map: &Map) {
 }
 
 /// Ids of the layers that make up the debug road-grid overlay.
-const GRID_LAYER_IDS: [&str; 3] = ["all-highways", "intersections", "cells"];
+const GRID_LAYER_IDS: [&str; 4] = [
+    "all-highways",
+    "intersections",
+    "cells-fill",
+    "cells-outline",
+];
 
 /// Add the styled grid overlay layers, assuming their sources already exist.
 /// Each layer is skipped if it is already present, so this doubles as the
 /// "switch the overlay back on" path after it has been hidden.
 fn add_grid_layer_styles(map: &Map) {
-    if map.get_geojson_source("cells").is_some() && map.get_layer("cells").is_err() {
-        let mut lines = LineLayer::new("cells", "cells");
-        lines.layout.line_join = Some(LineJoin::Round.into());
-        lines.layout.line_cap = Some(LineCap::Round.into());
-        // This colour is borrowed to be visually distinct to the unselected run lines, so the
-        // polygons are somewhat viewable at the same time as runs.
-        lines.paint.line_color = Some(SELECTED_RUN_LINE_COLOUR.into());
-        lines.paint.line_width = Some(3.0.into());
-        if let Err(err) = map.add_layer(lines, None) {
-            log::error!("Failed to add cells layer: {err:?}");
+    if map.get_geojson_source("cells").is_some() {
+        if map.get_layer("cells-outline").is_err() {
+            let mut fill = FillLayer::new("cells-fill", "cells");
+            // This colour is borrowed to be visually distinct to the unselected run lines, so the
+            // polygons are somewhat viewable at the same time as runs.
+            fill.paint.fill_color = Some("rgba(0,96,208,0.5)".into());
+            if let Err(err) = map.add_layer(fill, None) {
+                log::error!("Failed to add cells layer: {err:?}");
+            }
+        }
+        if map.get_layer("cells-outline").is_err() {
+            let mut lines = LineLayer::new("cells-outline", "cells");
+            lines.layout.line_join = Some(LineJoin::Round.into());
+            lines.layout.line_cap = Some(LineCap::Round.into());
+            lines.paint.line_color = Some("rgba(0,0,0,0.5)".into());
+            // lines.paint.line_color = Some(CELL_OUTLINE_COLOUR.into());
+            // lines.paint.line_opacity = Some(0.0.into());
+            lines.paint.line_width = Some(3.0.into());
+            if let Err(err) = map.add_layer(lines, None) {
+                log::error!("Failed to add cells layer: {err:?}");
+            }
         }
     }
     if map.get_geojson_source("all-highways").is_some() && map.get_layer("all-highways").is_err() {
