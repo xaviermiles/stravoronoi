@@ -27,31 +27,35 @@ const SCALING_FACTOR: f64 = 10_000_000.;
 /// Create boostvoronoi point from coordinate.
 ///
 /// boostvoronoi only supports integer types so cast the f64 to i64.
-fn point_i64(point_f64: &[f64]) -> Point<i64> {
-    Point::new(
+fn point_i64(point_f64: &[f64]) -> Option<Point<i64>> {
+    let [x, y] = point_f64 else {
+        return None;
+    };
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    Some(Point::new(
         (point_f64[0] * COORD_SCALE) as i64,
         (point_f64[1] * COORD_SCALE) as i64,
-    )
+    ))
 }
 
-fn line_i64(start: &[f64], end: &[f64]) -> Line<i64> {
-    Line::new(point_i64(start), point_i64(end))
+fn line_i64(start: &[f64], end: &[f64]) -> Option<Line<i64>> {
+    let start = point_i64(start)?;
+    let end = point_i64(end)?;
+    if start == end {
+        // Skip zero-length segments.
+        return None;
+    }
+    Some(Line::new(start, end))
 }
 
 fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
     segment_coords
         .iter()
         .zip(segment_coords.iter().skip(1))
-        .map(|(start, end)| line_i64(start, end))
+        .filter_map(|(start, end)| line_i64(start, end))
         .collect()
-}
-
-/// Extract the numeric OSM way id carried on a way feature.
-fn feature_way_id(way: &Feature) -> Option<i64> {
-    match way.id.as_ref()? {
-        Id::Number(number) => number.as_i64(),
-        Id::String(_) => None,
-    }
 }
 
 async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
@@ -66,10 +70,7 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
     // straight back into these vectors, giving cell -> way.
     let mut segment_ways: Vec<i64> = Vec::new();
     for way_model in ways {
-        let way: Feature = way_model.geojson.parse().expect("it should be a feature");
-        let Some(way_id) = feature_way_id(&way) else {
-            continue;
-        };
+        let way: Feature = way_model.geojson.parse().expect("load() creates features");
         let Some(geometry) = &way.geometry else {
             continue;
         };
@@ -78,7 +79,7 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
         };
         for segment in get_segment_pairs(coords) {
             segment_pairs.push(segment);
-            segment_ways.push(way_id);
+            segment_ways.push(way_model.way_id);
         }
     }
 
@@ -90,9 +91,9 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
 
     let diagram = Builder::<i64>::default()
         .with_segments(segment_pairs)
-        .unwrap()
+        .map_err(|err| format!("Failed to add segments to voronoi builder: {err}"))?
         .build()
-        .unwrap();
+        .map_err(|err| format!("Failed to build voronoi diagram: {err}"))?;
     let mut polygons: HashMap<i64, Vec<Polygon<f64>>> = HashMap::new();
     for cell in diagram.cells().iter() {
         // combine continue/filter & map into a single iter operation?
@@ -179,9 +180,9 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     }
 
     let mut ways = Vec::new();
-    // Track each way's node ids alongside its polygon so adjoining ways can be
+    // Track each way's node ids alongside its line string so adjoining ways can be
     // joined by shared nodes rather than an expensive geometric adjacency test.
-    let mut named_ways_geo: HashMap<&String, Vec<(Polygon, &Vec<i64>)>> = HashMap::new();
+    let mut named_ways_geo: HashMap<&String, Vec<(LineString, &Vec<i64>)>> = HashMap::new();
     let mut unnamed_ways_geo = Vec::new();
     let mut node_to_nodes: HashMap<i64, HashSet<i64>> = HashMap::new();
     for element in &response.elements {
@@ -229,13 +230,13 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                     .to_owned()
             })
             .collect();
-        let way_polygon = Polygon::new(LineString(way_coords), vec![]);
+        let way_geo = LineString(way_coords);
         match name {
             Some(name) => named_ways_geo
                 .entry(name)
                 .or_default()
-                .push((way_polygon, node_ids)),
-            None => unnamed_ways_geo.push(way_polygon),
+                .push((way_geo, node_ids)),
+            None => unnamed_ways_geo.push(way_geo),
         };
     }
 
@@ -305,32 +306,29 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
         }
 
         // Bucket polygons by their component root, then union each bucket.
-        let mut components: HashMap<usize, Vec<Polygon>> = HashMap::new();
-        for (way_index, (polygon, _)) in ways_geo.into_iter().enumerate() {
+        let mut components: HashMap<usize, Vec<LineString>> = HashMap::new();
+        for (way_index, (way_geo, _)) in ways_geo.into_iter().enumerate() {
             let root = find_root(&mut parent, way_index);
-            components.entry(root).or_default().push(polygon);
+            components.entry(root).or_default().push(way_geo);
         }
-        // let merged: Vec<_> = components
-        //     .into_values()
-        //     .map(|polygons| geo::algorithm::unary_union(&polygons))
-        //     .collect();
 
-        for (_, polygons) in components {
-            let merged = geo::algorithm::unary_union(&polygons);
+        for (_, line_strings) in components {
             let mut properties = geojson::JsonObject::new();
             properties.insert(
                 "name".to_string(),
                 serde_json::Value::String(name.to_string()),
             );
-            let feature = Feature {
-                geometry: Some(Geometry::new(Value::from(&merged))),
-                properties: Some(properties),
-                ..Default::default()
-            };
-            merged_named_ways_geo.push(grid_merged_way::ActiveModel {
-                way_id: NotSet,
-                geojson: Set(feature.to_string()),
-            });
+            for merged_way in line_strings {
+                let feature = Feature {
+                    geometry: Some(Geometry::new(Value::from(&merged_way))),
+                    properties: Some(properties.clone()),
+                    ..Default::default()
+                };
+                merged_named_ways_geo.push(grid_merged_way::ActiveModel {
+                    way_id: NotSet,
+                    geojson: Set(feature.to_string()),
+                });
+            }
         }
     }
 

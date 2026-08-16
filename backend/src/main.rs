@@ -62,7 +62,7 @@ async fn init_app_state() -> AppState {
     tokio::spawn(async move {
         match road_grid::seed(&seed_database).await {
             Ok(()) => is_grid_ready.store(true, Ordering::Release),
-            Err(err) => tracing::warn!("Failed to seed road grid: {err}"),
+            Err(err) => tracing::error!("Failed to seed road grid: {err}"),
         }
     });
     state
@@ -98,11 +98,8 @@ async fn main() {
         .route(
             "/api/grid/intersections",
             get(routes::grid::get_intersections),
-        )        
-        .route(
-            "/api/grid/cells",
-            get(routes::grid::get_cells),
         )
+        .route("/api/grid/cells", get(routes::grid::get_cells))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS layer goes last so it executes first for incoming requests and wraps everything else.

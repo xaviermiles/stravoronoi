@@ -32,7 +32,7 @@ pub async fn get_overpass_data() -> Result<OverpassResponse, String> {
     // TODO: increase coordinates back to (-43.60, 172.50, -43.45, 172.75)
     // Needs a big timeout otherwise will get 504 error responses.
     let query = r#"[out:json][timeout:500];
-    way[highway~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street)$"](-43.54, 172.61, -43.52, 172.65) -> .filtered_ways;
+    way[highway~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street)$"](-43.54, 172.61, -43.52, 172.63) -> .filtered_ways;
     (
       .filtered_ways;
       node(w.filtered_ways);
