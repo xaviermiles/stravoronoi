@@ -1,5 +1,5 @@
 /// Imports and processes the road grid.
-use crate::models::{grid_cell, grid_node, grid_way};
+use crate::models::{grid_cell, grid_merged_way, grid_node, grid_way};
 use crate::services::overpass::{self, OsmElement};
 use boostvoronoi::prelude::*;
 use geo_types::{Coord, LineString, Polygon};
@@ -7,7 +7,7 @@ use geojson::Feature;
 use geojson::Geometry;
 use geojson::Value;
 use geojson::feature::Id;
-use sea_orm::ActiveValue::Set;
+use sea_orm::ActiveValue::{NotSet, Set};
 use sea_orm::EntityTrait;
 use sea_orm::QueryFilter;
 use sea_orm::prelude::Expr;
@@ -23,49 +23,6 @@ pub const COORD_SCALE: f64 = 1e7;
 const INSERT_CHUNK: usize = 300;
 
 const SCALING_FACTOR: f64 = 10_000_000.;
-
-async fn get_ways(database: &DatabaseConnection) -> Vec<Feature> {
-    // Join each way segment to its node so coordinates are resolved in the query.
-    let ways = match grid_way::Entity::find()
-        .order_by_id_asc()
-        .find_also_related(grid_node::Entity)
-        .all(database)
-        .await
-    {
-        Ok(ways) => ways,
-        Err(err) => {
-            tracing::error!("Error finding grid ways: {err}");
-            return Vec::new();
-        }
-    };
-
-    // Chunk by way_id to create a LineString feature for each way.
-    ways.chunk_by(|a, b| a.0.way_id == b.0.way_id)
-        .filter_map(|chunk| {
-            let coords: Vec<Vec<f64>> = chunk
-                .iter()
-                .filter_map(|(_, node)| node.as_ref())
-                .map(|node| {
-                    vec![
-                        (node.longitude as f64) / COORD_SCALE,
-                        (node.latitude as f64) / COORD_SCALE,
-                    ]
-                })
-                .collect();
-            let way = &chunk[0].0;
-            let mut properties = geojson::JsonObject::new();
-            if let Some(name) = &way.name {
-                properties.insert("name".to_string(), serde_json::Value::String(name.clone()));
-            }
-            Some(Feature {
-                id: Some(Id::Number(way.way_id.into())),
-                geometry: Some(Geometry::new(Value::LineString(coords))),
-                properties: Some(properties),
-                ..Default::default()
-            })
-        })
-        .collect()
-}
 
 /// Create boostvoronoi point from coordinate.
 ///
@@ -98,24 +55,21 @@ fn feature_way_id(way: &Feature) -> Option<i64> {
 }
 
 async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
-    // TODO: this is lazy way to get them (code copied from router).
-    let ways = get_ways(database).await;
+    let ways = grid_merged_way::Entity::find()
+        .order_by_id_asc()
+        .all(database)
+        .await
+        .map_err(|err| format!("Failed to get merged ways: {err}"))?;
     let mut segment_pairs = Vec::new();
     // `segment_ways[i]` records the way that produced `segment_pairs[i]`. Because
     // the diagram is built from segments only, a cell's `source_index()` indexes
     // straight back into these vectors, giving cell -> way.
     let mut segment_ways: Vec<i64> = Vec::new();
-    for way in ways {
+    for way_model in ways {
+        let way: Feature = way_model.geojson.parse().expect("it should be a feature");
         let Some(way_id) = feature_way_id(&way) else {
             continue;
         };
-        // Only include "Oxford Terrace" ways to limit the scale for now.
-        let Some(name) = way.property("name") else {
-            continue;
-        };
-        if name.as_str() != Some("Oxford Terrace") {
-            continue;
-        }
         let Some(geometry) = &way.geometry else {
             continue;
         };
@@ -127,6 +81,12 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
             segment_ways.push(way_id);
         }
     }
+
+    tracing::info!(
+        "Using {} segment pairs and {} segment ways for voronoi.",
+        segment_pairs.len(),
+        segment_ways.len()
+    );
 
     let diagram = Builder::<i64>::default()
         .with_segments(segment_pairs)
@@ -189,53 +149,94 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
     Ok(())
 }
 
+/// Union-find root lookup with path halving, used to group adjoining ways into connected components.
+fn find_root(parent: &mut [usize], mut i: usize) -> usize {
+    while parent[i] != i {
+        parent[i] = parent[parent[i]];
+        i = parent[i];
+    }
+    i
+}
+
 /// Fetch the Christchurch road network from Overpass and persist it as grid
 /// nodes and ordered way-node segments.
 async fn load(database: &DatabaseConnection) -> Result<(), String> {
     let response = overpass::get_overpass_data().await?;
 
     let mut nodes = Vec::new();
+    let mut nodes_by_id = HashMap::new();
+    for element in &response.elements {
+        let OsmElement::Node { id, lat, lon } = element else {
+            continue;
+        };
+        nodes.push(grid_node::ActiveModel {
+            id: Set(*id),
+            latitude: Set((lat * COORD_SCALE) as i32),
+            longitude: Set((lon * COORD_SCALE) as i32),
+            is_intersection: Set(false),
+        });
+        nodes_by_id.insert(id, Coord { x: *lon, y: *lat });
+    }
+
     let mut ways = Vec::new();
+    // Track each way's node ids alongside its polygon so adjoining ways can be
+    // joined by shared nodes rather than an expensive geometric adjacency test.
+    let mut named_ways_geo: HashMap<&String, Vec<(Polygon, &Vec<i64>)>> = HashMap::new();
+    let mut unnamed_ways_geo = Vec::new();
     let mut node_to_nodes: HashMap<i64, HashSet<i64>> = HashMap::new();
-    for element in response.elements {
-        match element {
-            OsmElement::Node { id, lat, lon } => {
-                nodes.push(grid_node::ActiveModel {
-                    id: Set(id),
-                    latitude: Set((lat * COORD_SCALE) as i32),
-                    longitude: Set((lon * COORD_SCALE) as i32),
-                    is_intersection: Set(false),
-                });
-            }
-            OsmElement::Way {
-                id,
-                nodes: node_ids,
-                tags,
-            } => {
-                // A way is an ordered list of node references: each consecutive
-                // pair forms a segment of the polyline, captured here as one
-                // (way_id, sequence, node_id) row.
-                let tags = tags.unwrap_or_default();
-                for (sequence, node_id) in node_ids.iter().enumerate() {
-                    ways.push(grid_way::ActiveModel {
-                        way_id: Set(id),
-                        name: Set(tags.get("name").cloned()),
-                        sequence: Set(sequence as i32),
-                        node_id: Set(*node_id),
-                    });
-                }
-                for (node_id1, node_id2) in node_ids.iter().zip(node_ids.iter().skip(1)) {
-                    node_to_nodes
-                        .entry(*node_id1)
-                        .or_default()
-                        .insert(*node_id2);
-                    node_to_nodes
-                        .entry(*node_id2)
-                        .or_default()
-                        .insert(*node_id1);
-                }
-            }
+    for element in &response.elements {
+        let OsmElement::Way {
+            id,
+            nodes: node_ids,
+            tags,
+        } = element
+        else {
+            continue;
+        };
+
+        // A way is an ordered list of node references: each consecutive
+        // pair forms a segment of the polyline, captured here as one
+        // (way_id, sequence, node_id) row.
+        let name = match &tags {
+            Some(tags) => tags.get("name"),
+            None => None,
+        };
+        for (sequence, node_id) in node_ids.iter().enumerate() {
+            ways.push(grid_way::ActiveModel {
+                way_id: Set(*id),
+                name: Set(name.cloned()),
+                sequence: Set(sequence as i32),
+                node_id: Set(*node_id),
+            });
         }
+        for (node_id1, node_id2) in node_ids.iter().zip(node_ids.iter().skip(1)) {
+            node_to_nodes
+                .entry(*node_id1)
+                .or_default()
+                .insert(*node_id2);
+            node_to_nodes
+                .entry(*node_id2)
+                .or_default()
+                .insert(*node_id1);
+        }
+
+        let way_coords: Vec<_> = node_ids
+            .iter()
+            .map(|node_id| {
+                nodes_by_id
+                    .get(&node_id)
+                    .expect("should be referencing a node that exists")
+                    .to_owned()
+            })
+            .collect();
+        let way_polygon = Polygon::new(LineString(way_coords), vec![]);
+        match name {
+            Some(name) => named_ways_geo
+                .entry(name)
+                .or_default()
+                .push((way_polygon, node_ids)),
+            None => unnamed_ways_geo.push(way_polygon),
+        };
     }
 
     tracing::info!(
@@ -258,12 +259,13 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             .map_err(|err| format!("Failed to insert way nodes: {err}"))?;
     }
 
-    // Intersection nodes also includes the nodes at a dead end.
-    let intersection_ids: Vec<_> = node_to_nodes
-        .into_iter()
-        .filter(|(_node, other_nodes)| other_nodes.len() != 2)
-        .map(|(node, _other_nodes)| node)
+    // A node is an intersection (or dead end) when it doesn't connect exactly two neighbours.
+    let intersection_nodes: HashSet<i64> = node_to_nodes
+        .iter()
+        .filter(|(_, others)| others.len() != 2)
+        .map(|(node, _)| *node)
         .collect();
+    let intersection_ids: Vec<_> = intersection_nodes.iter().copied().collect();
 
     tracing::info!("Found {} intersection nodes", intersection_ids.len());
 
@@ -274,6 +276,69 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             .exec(database)
             .await
             .map_err(|err| format!("Failed to flag intersection nodes: {err}"))?;
+    }
+
+    // Merge adjoining same-named ways into connected components using union-find:
+    // two ways join only when they share a non-intersection node.
+    let mut merged_named_ways_geo = Vec::new();
+    for (name, ways_geo) in named_ways_geo.into_iter() {
+        let mut parent: Vec<usize> = (0..ways_geo.len()).collect();
+        // Map each non-intersection node to the first way that touched it; a
+        // second visitor unions the two ways into one component.
+        let mut node_owner: HashMap<i64, usize> = HashMap::new();
+        for (way_index, (_, node_ids)) in ways_geo.iter().enumerate() {
+            for node_id in node_ids.iter() {
+                if intersection_nodes.contains(node_id) {
+                    continue;
+                }
+                match node_owner.get(node_id) {
+                    Some(&other) => {
+                        let a = find_root(&mut parent, way_index);
+                        let b = find_root(&mut parent, other);
+                        parent[a] = b;
+                    }
+                    None => {
+                        node_owner.insert(*node_id, way_index);
+                    }
+                }
+            }
+        }
+
+        // Bucket polygons by their component root, then union each bucket.
+        let mut components: HashMap<usize, Vec<Polygon>> = HashMap::new();
+        for (way_index, (polygon, _)) in ways_geo.into_iter().enumerate() {
+            let root = find_root(&mut parent, way_index);
+            components.entry(root).or_default().push(polygon);
+        }
+        // let merged: Vec<_> = components
+        //     .into_values()
+        //     .map(|polygons| geo::algorithm::unary_union(&polygons))
+        //     .collect();
+
+        for (_, polygons) in components {
+            let merged = geo::algorithm::unary_union(&polygons);
+            let mut properties = geojson::JsonObject::new();
+            properties.insert(
+                "name".to_string(),
+                serde_json::Value::String(name.to_string()),
+            );
+            let feature = Feature {
+                geometry: Some(Geometry::new(Value::from(&merged))),
+                properties: Some(properties),
+                ..Default::default()
+            };
+            merged_named_ways_geo.push(grid_merged_way::ActiveModel {
+                way_id: NotSet,
+                geojson: Set(feature.to_string()),
+            });
+        }
+    }
+
+    for merged_ways_chunk in merged_named_ways_geo.chunks(INSERT_CHUNK) {
+        grid_merged_way::Entity::insert_many(merged_ways_chunk.to_vec())
+            .exec(database)
+            .await
+            .map_err(|err| format!("Failed to insert way nodes: {err}"))?;
     }
 
     Ok(())
