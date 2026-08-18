@@ -159,6 +159,68 @@ fn find_root(parent: &mut [usize], mut i: usize) -> usize {
     i
 }
 
+/// A component line string tagged with the node ids of its two endpoints, so
+/// stitching can join pieces at a shared node without welding at intersections.
+struct StitchPiece {
+    coords: Vec<Coord>,
+    start_node: i64,
+    end_node: i64,
+}
+
+/// Stitch a component's line strings into one continuous line string, grafting
+/// pieces end-to-end only where they meet at a shared non-intersection node so a
+/// merged way never runs through an intersection.
+fn stitch_line_strings(
+    mut pieces: Vec<StitchPiece>,
+    intersection_nodes: &HashSet<i64>,
+) -> LineString {
+    let Some(first) = pieces.pop() else {
+        return LineString(Vec::new());
+    };
+    let mut chain = first.coords;
+    let mut front_node = first.start_node;
+    let mut back_node = first.end_node;
+    let mut progress = true;
+    while progress {
+        progress = false;
+        let mut index = 0;
+        while index < pieces.len() {
+            let piece = &pieces[index];
+            // The shared endpoint is dropped from the grafted piece to avoid a
+            // duplicated coordinate at the join.
+            if piece.start_node == back_node && !intersection_nodes.contains(&back_node) {
+                chain.extend_from_slice(&piece.coords[1..]);
+                back_node = piece.end_node;
+            } else if piece.end_node == back_node && !intersection_nodes.contains(&back_node) {
+                chain.extend(piece.coords.iter().rev().skip(1).copied());
+                back_node = piece.start_node;
+            } else if piece.end_node == front_node && !intersection_nodes.contains(&front_node) {
+                let mut prefix = piece.coords[..piece.coords.len() - 1].to_vec();
+                prefix.extend_from_slice(&chain);
+                chain = prefix;
+                front_node = piece.start_node;
+            } else if piece.start_node == front_node && !intersection_nodes.contains(&front_node) {
+                let mut prefix: Vec<Coord> = piece
+                    .coords
+                    .iter()
+                    .rev()
+                    .take(piece.coords.len() - 1)
+                    .copied()
+                    .collect();
+                prefix.extend_from_slice(&chain);
+                chain = prefix;
+                front_node = piece.end_node;
+            } else {
+                index += 1;
+                continue;
+            }
+            pieces.swap_remove(index);
+            progress = true;
+        }
+    }
+    LineString(chain)
+}
+
 /// Fetch the Christchurch road network from Overpass and persist it as grid
 /// nodes and ordered way-node segments.
 async fn load(database: &DatabaseConnection) -> Result<(), String> {
@@ -305,30 +367,38 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             }
         }
 
-        // Bucket polygons by their component root, then union each bucket.
-        let mut components: HashMap<usize, Vec<LineString>> = HashMap::new();
-        for (way_index, (way_geo, _)) in ways_geo.into_iter().enumerate() {
+        // Bucket ways by their component root, then union each bucket.
+        let mut components: HashMap<usize, Vec<StitchPiece>> = HashMap::new();
+        for (way_index, (way_geo, node_ids)) in ways_geo.into_iter().enumerate() {
             let root = find_root(&mut parent, way_index);
-            components.entry(root).or_default().push(way_geo);
+            let (Some(&start_node), Some(&end_node)) = (node_ids.first(), node_ids.last()) else {
+                continue;
+            };
+            components.entry(root).or_default().push(StitchPiece {
+                coords: way_geo.0,
+                start_node,
+                end_node,
+            });
         }
 
-        for (_, line_strings) in components {
+        // Union each bucket: stitch its line strings end-to-end into one merged
+        // way, joining only at shared non-intersection nodes.
+        for (_, pieces) in components {
             let mut properties = geojson::JsonObject::new();
             properties.insert(
                 "name".to_string(),
                 serde_json::Value::String(name.to_string()),
             );
-            for merged_way in line_strings {
-                let feature = Feature {
-                    geometry: Some(Geometry::new(Value::from(&merged_way))),
-                    properties: Some(properties.clone()),
-                    ..Default::default()
-                };
-                merged_named_ways_geo.push(grid_merged_way::ActiveModel {
-                    way_id: NotSet,
-                    geojson: Set(feature.to_string()),
-                });
-            }
+            let merged_way = stitch_line_strings(pieces, &intersection_nodes);
+            let feature = Feature {
+                geometry: Some(Geometry::new(Value::from(&merged_way))),
+                properties: Some(properties),
+                ..Default::default()
+            };
+            merged_named_ways_geo.push(grid_merged_way::ActiveModel {
+                way_id: NotSet,
+                geojson: Set(feature.to_string()),
+            });
         }
     }
 
