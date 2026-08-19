@@ -2,6 +2,7 @@
 use crate::models::{grid_cell, grid_node, grid_way};
 use crate::services::overpass::{self, OsmElement};
 use boostvoronoi::prelude::*;
+use geo::BooleanOps;
 use geo_types::{Coord, LineString, Polygon};
 use geojson::Feature;
 use geojson::Geometry;
@@ -56,6 +57,30 @@ fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
         .zip(segment_coords.iter().skip(1))
         .filter_map(|(start, end)| line_i64(start, end))
         .collect()
+}
+
+fn get_bounding_box(minimum: Coord, maximum: Coord) -> Polygon {
+    Polygon::new(
+        LineString(vec![
+            Coord {
+                x: minimum.x,
+                y: minimum.y,
+            },
+            Coord {
+                x: minimum.x,
+                y: maximum.y,
+            },
+            Coord {
+                x: maximum.x,
+                y: maximum.y,
+            },
+            Coord {
+                x: maximum.x,
+                y: minimum.y,
+            },
+        ]),
+        vec![],
+    )
 }
 
 async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
@@ -125,13 +150,26 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
         polygons.entry(way_id).or_default().push(polygon);
     }
 
+    // The voronoi cells are unbounded and some cells spike off far into the distance. Crop by a
+    // bounding box so they look more sensible.
+    let christchurch_bounding_box = get_bounding_box(
+        Coord {
+            x: 172.50,
+            y: -43.60,
+        },
+        Coord {
+            x: 172.75,
+            y: -43.45,
+        },
+    );
     let polygons_database: Vec<_> = polygons
         .into_iter()
         .map(|(way_id, polygon_cells)| {
             let merged_polygons = geo::algorithm::unary_union(&polygon_cells);
+            let cropped_merged_polygons = merged_polygons.intersection(&christchurch_bounding_box);
             let feature = Feature {
                 id: Some(Id::Number(way_id.into())),
-                geometry: Some(Geometry::new(Value::from(&merged_polygons))),
+                geometry: Some(Geometry::new(Value::from(&cropped_merged_polygons))),
                 ..Default::default()
             };
             grid_cell::ActiveModel {
