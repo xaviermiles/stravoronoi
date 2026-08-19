@@ -1,5 +1,5 @@
 /// Imports and processes the road grid.
-use crate::models::{grid_cell, grid_merged_way, grid_node};
+use crate::models::{grid_cell, grid_node, grid_way};
 use crate::services::overpass::{self, OsmElement};
 use boostvoronoi::prelude::*;
 use geo_types::{Coord, LineString, Polygon};
@@ -59,7 +59,7 @@ fn get_segment_pairs(segment_coords: &[Vec<f64>]) -> Vec<Line<i64>> {
 }
 
 async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
-    let ways = grid_merged_way::Entity::find()
+    let ways = grid_way::Entity::find()
         .order_by_id_asc()
         .all(database)
         .await
@@ -280,7 +280,6 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     let mut node_to_nodes: HashMap<i64, HashSet<i64>> = HashMap::new();
     for element in &response.elements {
         let OsmElement::Way {
-            id: _,
             nodes: node_ids,
             tags,
         } = element
@@ -368,7 +367,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                 geometry: Some(Geometry::new(Value::from(&piece))),
                 ..Default::default()
             };
-            merged_ways_geo.push(grid_merged_way::ActiveModel {
+            merged_ways_geo.push(grid_way::ActiveModel {
                 way_id: NotSet,
                 geojson: Set(feature.to_string()),
             });
@@ -431,7 +430,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                     properties: Some(properties.clone()),
                     ..Default::default()
                 };
-                merged_ways_geo.push(grid_merged_way::ActiveModel {
+                merged_ways_geo.push(grid_way::ActiveModel {
                     way_id: NotSet,
                     geojson: Set(feature.to_string()),
                 });
@@ -440,7 +439,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     }
 
     for merged_ways_chunk in merged_ways_geo.chunks(INSERT_CHUNK) {
-        grid_merged_way::Entity::insert_many(merged_ways_chunk.to_vec())
+        grid_way::Entity::insert_many(merged_ways_chunk.to_vec())
             .exec(database)
             .await
             .map_err(|err| format!("Failed to insert way nodes: {err}"))?;

@@ -1,6 +1,6 @@
 /// Endpoints for the road grid.
 use crate::AppState;
-use crate::models::{grid_cell, grid_merged_way, grid_node};
+use crate::models::{grid_cell, grid_way, grid_node};
 use crate::road_grid;
 use axum::Json;
 use axum::extract::State;
@@ -28,7 +28,7 @@ pub async fn get_ways(State(state): State<AppState>) -> Response {
         return StatusCode::NO_CONTENT.into_response();
     }
 
-    let merged_ways = match grid_merged_way::Entity::find()
+    let merged_ways = match grid_way::Entity::find()
         .order_by_id_asc()
         .all(&state.database)
         .await

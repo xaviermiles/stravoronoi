@@ -12,7 +12,6 @@ pub enum OsmElement {
     Node { id: i64, lat: f64, lon: f64 },
     #[serde(rename = "way")]
     Way {
-        id: i64,
         nodes: Vec<i64>,
         tags: Option<HashMap<String, String>>,
     },

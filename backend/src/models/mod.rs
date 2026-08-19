@@ -5,7 +5,7 @@ use sea_orm::DatabaseConnection;
 use sea_orm::DbErr;
 pub mod athlete;
 pub mod grid_cell;
-pub mod grid_merged_way;
+pub mod grid_way;
 pub mod grid_node;
 pub mod run;
 pub mod session;
