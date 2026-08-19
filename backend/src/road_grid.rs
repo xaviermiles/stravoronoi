@@ -221,6 +221,36 @@ fn stitch_line_strings(
     LineString(chain)
 }
 
+/// Bit-pattern key for a coordinate. Stitching only copies and reorders existing
+/// coordinates, so identical nodes keep byte-identical f64 values that hash equal.
+fn coord_key(coord: &Coord) -> (u64, u64) {
+    (coord.x.to_bits(), coord.y.to_bits())
+}
+
+/// Split a stitched line string at any interior intersection coordinate so none of the lines run
+/// through an intersection. The boundary coordinate is repeated as the shared endpoint of both
+/// adjoining pieces to keep the geometry contiguous.
+fn split_line_at_intersections(
+    line: LineString,
+    intersection_coords: &HashSet<(u64, u64)>,
+) -> Vec<LineString> {
+    let coords = line.0;
+    let mut pieces = Vec::new();
+    let mut current: Vec<Coord> = Vec::new();
+    for (index, coord) in coords.iter().enumerate() {
+        current.push(*coord);
+        let is_interior = index > 0 && index + 1 < coords.len();
+        if is_interior && intersection_coords.contains(&coord_key(coord)) {
+            pieces.push(LineString(std::mem::take(&mut current)));
+            current.push(*coord);
+        }
+    }
+    if current.len() > 1 {
+        pieces.push(LineString(current));
+    }
+    pieces
+}
+
 /// Fetch the Christchurch road network from Overpass and persist it as grid
 /// nodes and ordered way-node segments.
 async fn load(database: &DatabaseConnection) -> Result<(), String> {
@@ -246,6 +276,8 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     // joined by shared nodes rather than an expensive geometric adjacency test.
     let mut named_ways_geo: HashMap<&String, Vec<(LineString, &Vec<i64>)>> = HashMap::new();
     let mut merged_ways_geo = Vec::new();
+    // Unnamed ways can't be merged, but they are still split at intersections below.
+    let mut unnamed_ways_geo: Vec<LineString> = Vec::new();
     let mut node_to_nodes: HashMap<i64, HashSet<i64>> = HashMap::new();
     for element in &response.elements {
         let OsmElement::Way {
@@ -299,15 +331,9 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                 .or_default()
                 .push((way_geo, node_ids)),
             None => {
-                // There is no way to merge ways that don't have names, so they are considered already "merged".
-                let way_feature = Feature {
-                    geometry: Some(Geometry::new(Value::from(&way_geo))),
-                    ..Default::default()
-                };
-                merged_ways_geo.push(grid_merged_way::ActiveModel {
-                    way_id: NotSet,
-                    geojson: Set(way_feature.to_string()),
-                });
+                // Unnamed ways can't be merged with anything, but they are still
+                // split at intersections below like the merged named ways.
+                unnamed_ways_geo.push(way_geo);
             }
         };
     }
@@ -339,6 +365,10 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
         .map(|(node, _)| *node)
         .collect();
     let intersection_ids: Vec<_> = intersection_nodes.iter().copied().collect();
+    let intersection_coords: HashSet<(u64, u64)> = intersection_nodes
+        .iter()
+        .filter_map(|node_id| nodes_by_id.get(&node_id).map(coord_key))
+        .collect();
 
     tracing::info!("Found {} intersection nodes", intersection_ids.len());
 
@@ -349,6 +379,20 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             .exec(database)
             .await
             .map_err(|err| format!("Failed to flag intersection nodes: {err}"))?;
+    }
+
+    // Split each unnamed way at intersections and emit it as a merged way.
+    for way_geo in unnamed_ways_geo {
+        for piece in split_line_at_intersections(way_geo, &intersection_coords) {
+            let feature = Feature {
+                geometry: Some(Geometry::new(Value::from(&piece))),
+                ..Default::default()
+            };
+            merged_ways_geo.push(grid_merged_way::ActiveModel {
+                way_id: NotSet,
+                geojson: Set(feature.to_string()),
+            });
+        }
     }
 
     // Merge adjoining same-named ways into connected components using union-find:
@@ -390,24 +434,28 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             });
         }
 
-        // Union each bucket: stitch its line strings end-to-end into one merged
-        // way, joining only at shared non-intersection nodes.
         for (_, pieces) in components {
             let mut properties = geojson::JsonObject::new();
             properties.insert(
                 "name".to_string(),
                 serde_json::Value::String(name.to_string()),
             );
+            // Union each bucket into one merged way.
             let merged_way = stitch_line_strings(pieces, &intersection_nodes);
-            let feature = Feature {
-                geometry: Some(Geometry::new(Value::from(&merged_way))),
-                properties: Some(properties),
-                ..Default::default()
-            };
-            merged_ways_geo.push(grid_merged_way::ActiveModel {
-                way_id: NotSet,
-                geojson: Set(feature.to_string()),
-            });
+            // The original (unmerged) ways may have contained an intersection partway through them, so it
+            // is necessary to split at intersections afterwards, even though the union-find and stitching
+            // also check for them.
+            for piece in split_line_at_intersections(merged_way, &intersection_coords) {
+                let feature = Feature {
+                    geometry: Some(Geometry::new(Value::from(&piece))),
+                    properties: Some(properties.clone()),
+                    ..Default::default()
+                };
+                merged_ways_geo.push(grid_merged_way::ActiveModel {
+                    way_id: NotSet,
+                    geojson: Set(feature.to_string()),
+                });
+            }
         }
     }
 
