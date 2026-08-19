@@ -1,5 +1,5 @@
 /// Imports and processes the road grid.
-use crate::models::{grid_cell, grid_merged_way, grid_node, grid_way};
+use crate::models::{grid_cell, grid_merged_way, grid_node};
 use crate::services::overpass::{self, OsmElement};
 use boostvoronoi::prelude::*;
 use geo_types::{Coord, LineString, Polygon};
@@ -271,7 +271,6 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
         nodes_by_id.insert(id, Coord { x: *lon, y: *lat });
     }
 
-    let mut ways = Vec::new();
     // Track each way's node ids alongside its line string so adjoining ways can be
     // joined by shared nodes rather than an expensive geometric adjacency test.
     let mut named_ways_geo: HashMap<&String, Vec<(LineString, &Vec<i64>)>> = HashMap::new();
@@ -281,7 +280,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     let mut node_to_nodes: HashMap<i64, HashSet<i64>> = HashMap::new();
     for element in &response.elements {
         let OsmElement::Way {
-            id,
+            id: _,
             nodes: node_ids,
             tags,
         } = element
@@ -296,14 +295,6 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
             Some(tags) => tags.get("name"),
             None => None,
         };
-        for (sequence, node_id) in node_ids.iter().enumerate() {
-            ways.push(grid_way::ActiveModel {
-                way_id: Set(*id),
-                name: Set(name.cloned()),
-                sequence: Set(sequence as i32),
-                node_id: Set(*node_id),
-            });
-        }
         for (node_id1, node_id2) in node_ids.iter().zip(node_ids.iter().skip(1)) {
             node_to_nodes
                 .entry(*node_id1)
@@ -338,24 +329,13 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
         };
     }
 
-    tracing::info!(
-        "Persisting {} grid nodes and {} way-node segments",
-        nodes.len(),
-        ways.len()
-    );
+    tracing::info!("Persisting {} grid nodes", nodes.len());
 
-    // Insert nodes first so the way-node references always resolve.
     for nodes_chunk in nodes.chunks(INSERT_CHUNK) {
         grid_node::Entity::insert_many(nodes_chunk.to_vec())
             .exec(database)
             .await
             .map_err(|err| format!("Failed to insert grid nodes: {err}"))?;
-    }
-    for ways_chunk in ways.chunks(INSERT_CHUNK) {
-        grid_way::Entity::insert_many(ways_chunk.to_vec())
-            .exec(database)
-            .await
-            .map_err(|err| format!("Failed to insert way nodes: {err}"))?;
     }
 
     // A node is an intersection (or dead end) when it doesn't connect exactly two neighbours.

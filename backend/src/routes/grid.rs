@@ -1,6 +1,6 @@
 /// Endpoints for the road grid.
 use crate::AppState;
-use crate::models::{grid_cell, grid_node, grid_way};
+use crate::models::{grid_cell, grid_merged_way, grid_node};
 use crate::road_grid;
 use axum::Json;
 use axum::extract::State;
@@ -28,10 +28,8 @@ pub async fn get_ways(State(state): State<AppState>) -> Response {
         return StatusCode::NO_CONTENT.into_response();
     }
 
-    // Join each way segment to its node so coordinates are resolved in the query.
-    let ways = match grid_way::Entity::find()
+    let merged_ways = match grid_merged_way::Entity::find()
         .order_by_id_asc()
-        .find_also_related(grid_node::Entity)
         .all(&state.database)
         .await
     {
@@ -41,33 +39,9 @@ pub async fn get_ways(State(state): State<AppState>) -> Response {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
-
-    // Chunk by way_id to create a LineString feature for each way.
-    let features = ways
-        .chunk_by(|a, b| a.0.way_id == b.0.way_id)
-        .map(|chunk| {
-            let coords: Vec<Vec<f64>> = chunk
-                .iter()
-                .filter_map(|(_, node)| node.as_ref())
-                .map(|node| {
-                    vec![
-                        (node.longitude as f64) / road_grid::COORD_SCALE,
-                        (node.latitude as f64) / road_grid::COORD_SCALE,
-                    ]
-                })
-                .collect();
-            let way = &chunk[0].0;
-            let mut properties = geojson::JsonObject::new();
-            if let Some(name) = &way.name {
-                properties.insert("name".to_string(), serde_json::Value::String(name.clone()));
-            }
-            Feature {
-                id: Some(Id::Number(way.way_id.into())),
-                geometry: Some(Geometry::new(Value::LineString(coords))),
-                properties: Some(properties),
-                ..Default::default()
-            }
-        })
+    let features: Vec<_> = merged_ways
+        .iter()
+        .map(|way_model| way_model.geojson.parse().expect("load() creates features"))
         .collect();
 
     as_response(features)

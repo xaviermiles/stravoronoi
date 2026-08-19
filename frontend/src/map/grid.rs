@@ -6,12 +6,7 @@ use mapboxgl::layer::CircleLayer;
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 
 /// Ids of the layers that make up the debug road-grid overlay.
-const GRID_LAYER_IDS: [&str; 4] = [
-    "all-highways",
-    "intersections",
-    "cells-fill",
-    "cells-outline",
-];
+const GRID_LAYER_IDS: [&str; 4] = ["ways", "intersections", "cells-fill", "cells-outline"];
 
 /// Add the styled grid overlay layers, assuming their sources already exist.
 /// Each layer is skipped if it is already present, so this doubles as the
@@ -40,10 +35,10 @@ fn add_grid_layer_styles(map: &Map) {
             }
         }
     }
-    if map.get_geojson_source("all-highways").is_some() && map.get_layer("all-highways").is_err() {
-        let lines = LineLayer::new("all-highways", "all-highways");
+    if map.get_geojson_source("ways").is_some() && map.get_layer("ways").is_err() {
+        let lines = LineLayer::new("ways", "ways");
         if let Err(err) = map.add_layer(lines, None) {
-            log::error!("Failed to add all-highways layer: {err:?}");
+            log::error!("Failed to add ways layer: {err:?}");
         }
     }
     if map.get_geojson_source("intersections").is_some() && map.get_layer("intersections").is_err()
@@ -73,8 +68,8 @@ pub fn set_grid_visible(map: &Map, visible: bool) {
 
 /// Add the grid layers to the map.
 pub async fn add_grid_layers(map: &Map, is_grid_visible: bool) {
-    let all_highways = crate::road_grid::get_all_ways().await;
-    map.add_geojson_source("all-highways", GeoJson::FeatureCollection(all_highways))
+    let all_ways = crate::road_grid::get_all_ways().await;
+    map.add_geojson_source("ways", GeoJson::FeatureCollection(all_ways))
         .unwrap();
     let intersections = crate::road_grid::get_intersections().await;
     map.add_geojson_source("intersections", GeoJson::FeatureCollection(intersections))
