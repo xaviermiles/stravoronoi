@@ -245,7 +245,7 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     // Track each way's node ids alongside its line string so adjoining ways can be
     // joined by shared nodes rather than an expensive geometric adjacency test.
     let mut named_ways_geo: HashMap<&String, Vec<(LineString, &Vec<i64>)>> = HashMap::new();
-    let mut unnamed_ways_geo = Vec::new();
+    let mut merged_ways_geo = Vec::new();
     let mut node_to_nodes: HashMap<i64, HashSet<i64>> = HashMap::new();
     for element in &response.elements {
         let OsmElement::Way {
@@ -298,7 +298,17 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                 .entry(name)
                 .or_default()
                 .push((way_geo, node_ids)),
-            None => unnamed_ways_geo.push(way_geo),
+            None => {
+                // There is no way to merge ways that don't have names, so they are considered already "merged".
+                let way_feature = Feature {
+                    geometry: Some(Geometry::new(Value::from(&way_geo))),
+                    ..Default::default()
+                };
+                merged_ways_geo.push(grid_merged_way::ActiveModel {
+                    way_id: NotSet,
+                    geojson: Set(way_feature.to_string()),
+                });
+            }
         };
     }
 
@@ -343,7 +353,6 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
 
     // Merge adjoining same-named ways into connected components using union-find:
     // two ways join only when they share a non-intersection node.
-    let mut merged_named_ways_geo = Vec::new();
     for (name, ways_geo) in named_ways_geo.into_iter() {
         let mut parent: Vec<usize> = (0..ways_geo.len()).collect();
         // Map each non-intersection node to the first way that touched it; a
@@ -395,14 +404,14 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
                 properties: Some(properties),
                 ..Default::default()
             };
-            merged_named_ways_geo.push(grid_merged_way::ActiveModel {
+            merged_ways_geo.push(grid_merged_way::ActiveModel {
                 way_id: NotSet,
                 geojson: Set(feature.to_string()),
             });
         }
     }
 
-    for merged_ways_chunk in merged_named_ways_geo.chunks(INSERT_CHUNK) {
+    for merged_ways_chunk in merged_ways_geo.chunks(INSERT_CHUNK) {
         grid_merged_way::Entity::insert_many(merged_ways_chunk.to_vec())
             .exec(database)
             .await
