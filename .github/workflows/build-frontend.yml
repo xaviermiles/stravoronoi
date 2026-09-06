@@ -36,6 +36,7 @@ jobs:
             - name: Run trunk build
               run: trunk build --public-url "/stravoronoi" --release
               env:
+                  CARTO_API_KEY: ${{ secrets.CARTO_API_KEY }}
                   MAPBOX_TOKEN: ${{ secrets.MAPBOX_FRONTEND_TOKEN }}
 
             - name: Setup Pages
