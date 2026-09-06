@@ -76,8 +76,8 @@ button[data-key="log-in"] {
 /* Checkbox overlay toggling the debug road-grid overlay. */
 #grid-toggle {
     position: absolute;
-    right: max(var(--control-edge), env(safe-area-inset-right));
-    bottom: max(var(--control-edge), env(safe-area-inset-bottom));
+    left: max(var(--control-edge), env(safe-area-inset-right));
+    top: max(var(--control-edge), env(safe-area-inset-bottom));
     z-index: 2;
     display: flex;
     align-items: center;
