@@ -10,7 +10,8 @@ fn main() {
         dotenvy::dotenv().unwrap();
     }
 
-    let key = "MAPBOX_TOKEN";
-    let value = std::env::var(key).unwrap();
-    println!("cargo:rustc-env={key}={value}");
+    for key in ["CARTO_API_KEY", "MAPBOX_TOKEN"] {
+        let value = std::env::var(key).unwrap();
+        println!("cargo:rustc-env={key}={value}");
+    }
 }
