@@ -168,7 +168,7 @@ async fn fetch_older_runs(
     }
     // If the loop above finished without returning an Err, then we know all the previous runs have been downloaded.
     // Update the final run in the database to know it is the final one.
-    if let Some(final_run) = find_final_downloaded_run(database, athlete_id).await {
+    if let Some(final_run) = find_oldest_downloaded_run(database, athlete_id).await {
         let mut final_run_active: models::run::ActiveModel = final_run.into();
         final_run_active.is_first_run = Set(true);
         final_run_active
@@ -189,7 +189,7 @@ fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
 /// Return a query to find the final downloaded run for a given athlete, as per the start date.
 ///
 /// This run does not necessarily have `is_first_run=true` (if not all runs have been downloaded).
-async fn find_final_downloaded_run(
+async fn find_oldest_downloaded_run(
     database: &DatabaseConnection,
     athlete_id: i64,
 ) -> Option<models::run::Model> {
@@ -222,7 +222,9 @@ pub async fn get_runs(
     // rather than from whichever page happens to be returned (which races with
     // the background backfill flagging the oldest run).
     let oldest_downloaded_run =
-        find_final_downloaded_run(&state.database, athlete.athlete_id).await;
+        find_oldest_downloaded_run(&state.database, athlete.athlete_id).await;
+    // If there is any runs, then we should check for runs since the user was last logged in.
+    let should_forwardfill = oldest_downloaded_run.is_some();
     let backfill_complete = oldest_downloaded_run
         .as_ref()
         .is_some_and(|run| run.is_first_run);
@@ -258,6 +260,14 @@ pub async fn get_runs(
                         tracing::error!("{err}");
                     };
                 });
+            }
+            if should_forwardfill {
+                let newest_downloaded_run = find_runs(athlete.athlete_id)
+                    .order_by_asc(models::run::COLUMN.start_date)
+                    .one(&state.database)
+                    .await
+                    .unwrap()
+                    .expect("there is an oldest run");
             }
         }
     }
