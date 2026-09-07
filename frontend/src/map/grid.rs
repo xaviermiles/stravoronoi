@@ -1,6 +1,5 @@
 /// Create and manage grid layers.
 use geojson::GeoJson;
-use mapboxgl::FillLayer;
 use mapboxgl::Map;
 use mapboxgl::layer::CircleLayer;
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
@@ -13,30 +12,29 @@ const GRID_LAYER_IDS: [&str; 4] = ["ways", "intersections", "cells-fill", "cells
 /// "switch the overlay back on" path after it has been hidden.
 fn add_grid_layer_styles(map: &Map) {
     if map.get_geojson_source("cells").is_some() {
-        if map.get_layer("cells-outline").is_err() {
-            let mut fill = FillLayer::new("cells-fill", "cells");
-            // This colour is borrowed to be visually distinct to the unselected run lines, so the
-            // polygons are somewhat viewable at the same time as runs.
-            fill.paint.fill_color = Some("rgba(0,96,208,0.5)".into());
-            if let Err(err) = map.add_layer(fill, None) {
-                log::error!("Failed to add cells layer: {err:?}");
-            }
-        }
+        // TODO: may use this "fill" in the future to show a selected cell?
+        // if map.get_layer("cells-fill").is_err() {
+        //     let mut fill = FillLayer::new("cells-fill", "cells");
+        //     // This colour is borrowed to be visually distinct to the unselected run lines, so the
+        //     // polygons are somewhat viewable at the same time as runs.
+        //     fill.paint.fill_color = Some("rgba(0,96,208,0.5)".into());
+        //     if let Err(err) = map.add_layer(fill, None) {
+        //         log::error!("Failed to add cells layer: {err:?}");
+        //     }
+        // }
         if map.get_layer("cells-outline").is_err() {
             let mut lines = LineLayer::new("cells-outline", "cells");
             lines.layout.line_join = Some(LineJoin::Round.into());
             lines.layout.line_cap = Some(LineCap::Round.into());
             lines.paint.line_color = Some("rgba(0,0,0,0.5)".into());
-            // lines.paint.line_color = Some(CELL_OUTLINE_COLOUR.into());
-            // lines.paint.line_opacity = Some(0.0.into());
-            lines.paint.line_width = Some(3.0.into());
             if let Err(err) = map.add_layer(lines, None) {
                 log::error!("Failed to add cells layer: {err:?}");
             }
         }
     }
     if map.get_geojson_source("ways").is_some() && map.get_layer("ways").is_err() {
-        let lines = LineLayer::new("ways", "ways");
+        let mut lines = LineLayer::new("ways", "ways");
+        lines.paint.line_width = Some(3.5.into());
         if let Err(err) = map.add_layer(lines, None) {
             log::error!("Failed to add ways layer: {err:?}");
         }

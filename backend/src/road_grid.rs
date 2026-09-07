@@ -83,6 +83,249 @@ fn get_bounding_box(minimum: Coord, maximum: Coord) -> Polygon {
     )
 }
 
+/// Reason a pair of input segments violates boostvoronoi's precondition that
+/// segments only touch at shared endpoints.
+enum SegmentConflict {
+    /// Interiors cross at a point.
+    Crossing,
+    /// Collinear and overlapping along a shared span.
+    CollinearOverlap,
+    /// An endpoint of one segment lands in the interior of the other.
+    TJunction,
+}
+
+/// Signed area sign of triangle (o, a, b): 1 left turn, -1 right turn, 0 collinear.
+fn orientation(o: (i128, i128), a: (i128, i128), b: (i128, i128)) -> i32 {
+    let value = (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+    value.signum() as i32
+}
+
+/// Whether collinear point `c` lies within the bounding box of segment `a`-`b`.
+fn within_bbox(a: (i128, i128), b: (i128, i128), c: (i128, i128)) -> bool {
+    c.0 >= a.0.min(b.0) && c.0 <= a.0.max(b.0) && c.1 >= a.1.min(b.1) && c.1 <= a.1.max(b.1)
+}
+
+/// Classify how two segments touch, returning `None` when they are disjoint or
+/// only meet at a mutual endpoint (both legal for boostvoronoi).
+fn classify_conflict(
+    a0: (i128, i128),
+    a1: (i128, i128),
+    b0: (i128, i128),
+    b1: (i128, i128),
+) -> Option<SegmentConflict> {
+    let d1 = orientation(b0, b1, a0);
+    let d2 = orientation(b0, b1, a1);
+    let d3 = orientation(a0, a1, b0);
+    let d4 = orientation(a0, a1, b1);
+
+    // Interiors cross when each segment straddles the other's supporting line.
+    if d1 * d2 < 0 && d3 * d4 < 0 {
+        return Some(SegmentConflict::Crossing);
+    }
+
+    // Fully collinear: flag when the 1-D overlap is longer than a single point.
+    if d1 == 0 && d2 == 0 && d3 == 0 && d4 == 0 {
+        let horizontal = (a1.0 - a0.0).abs() >= (a1.1 - a0.1).abs();
+        let key = |p: (i128, i128)| if horizontal { p.0 } else { p.1 };
+        let (a_lo, a_hi) = (key(a0).min(key(a1)), key(a0).max(key(a1)));
+        let (b_lo, b_hi) = (key(b0).min(key(b1)), key(b0).max(key(b1)));
+        if a_lo.max(b_lo) < a_hi.min(b_hi) {
+            return Some(SegmentConflict::CollinearOverlap);
+        }
+        return None;
+    }
+
+    // An endpoint sitting on the other segment's interior (not a shared vertex).
+    if d1 == 0 && within_bbox(b0, b1, a0) && a0 != b0 && a0 != b1 {
+        return Some(SegmentConflict::TJunction);
+    }
+    if d2 == 0 && within_bbox(b0, b1, a1) && a1 != b0 && a1 != b1 {
+        return Some(SegmentConflict::TJunction);
+    }
+    if d3 == 0 && within_bbox(a0, a1, b0) && b0 != a0 && b0 != a1 {
+        return Some(SegmentConflict::TJunction);
+    }
+    if d4 == 0 && within_bbox(a0, a1, b1) && b1 != a0 && b1 != a1 {
+        return Some(SegmentConflict::TJunction);
+    }
+    None
+}
+
+/// Log every input segment pair that breaks boostvoronoi's precondition, using
+/// an x-interval sweep so only overlapping-x candidates are pairwise tested.
+/// This proves which geometry causes the `is_finite()` panic before the build.
+fn report_invalid_segments(segments: &[Line<i64>], segment_ways: &[i64]) {
+    let coords: Vec<((i128, i128), (i128, i128))> = segments
+        .iter()
+        .map(|line| {
+            (
+                (line.start.x as i128, line.start.y as i128),
+                (line.end.x as i128, line.end.y as i128),
+            )
+        })
+        .collect();
+
+    // Order by minimum x so the sweep only compares x-overlapping segments.
+    let mut order: Vec<usize> = (0..coords.len()).collect();
+    order.sort_by_key(|&i| coords[i].0.0.min(coords[i].1.0));
+
+    let mut active: Vec<usize> = Vec::new();
+    let mut crossing = 0usize;
+    let mut collinear = 0usize;
+    let mut t_junction = 0usize;
+    const MAX_LOGGED: usize = 50;
+    let mut logged = 0usize;
+
+    for &i in &order {
+        let (ai0, ai1) = coords[i];
+        let i_min_x = ai0.0.min(ai1.0);
+        // Drop segments whose x-range ended before this one begins.
+        active.retain(|&j| coords[j].0.0.max(coords[j].1.0) >= i_min_x);
+        for &j in &active {
+            let (bj0, bj1) = coords[j];
+            let Some(conflict) = classify_conflict(ai0, ai1, bj0, bj1) else {
+                continue;
+            };
+            match conflict {
+                SegmentConflict::Crossing => crossing += 1,
+                SegmentConflict::CollinearOverlap => collinear += 1,
+                SegmentConflict::TJunction => t_junction += 1,
+            }
+            if logged < MAX_LOGGED {
+                let kind = match conflict {
+                    SegmentConflict::Crossing => "crossing",
+                    SegmentConflict::CollinearOverlap => "collinear-overlap",
+                    SegmentConflict::TJunction => "t-junction",
+                };
+                tracing::warn!(
+                    "Invalid segment pair ({kind}): way {} [{:?}->{:?}] vs way {} [{:?}->{:?}]",
+                    segment_ways.get(i).copied().unwrap_or(-1),
+                    ai0,
+                    ai1,
+                    segment_ways.get(j).copied().unwrap_or(-1),
+                    bj0,
+                    bj1
+                );
+                logged += 1;
+            }
+        }
+        active.push(i);
+    }
+
+    let total = crossing + collinear + t_junction;
+    if total == 0 {
+        tracing::info!("Segment validation passed: no illegal segment intersections found.");
+    } else {
+        tracing::warn!(
+            "Segment validation found {total} illegal intersections \
+             ({crossing} crossings, {collinear} collinear overlaps, {t_junction} t-junctions). \
+             boostvoronoi requires segments to touch only at shared endpoints."
+        );
+    }
+}
+
+/// Intersection point of two segments, rounded to the integer grid. Returns
+/// `None` for parallel/collinear pairs where there is no single crossing point.
+fn intersection_point(
+    a0: (i128, i128),
+    a1: (i128, i128),
+    b0: (i128, i128),
+    b1: (i128, i128),
+) -> Option<(i128, i128)> {
+    let (a0x, a0y) = (a0.0 as f64, a0.1 as f64);
+    let (rx, ry) = ((a1.0 - a0.0) as f64, (a1.1 - a0.1) as f64);
+    let (sx, sy) = ((b1.0 - b0.0) as f64, (b1.1 - b0.1) as f64);
+    let denominator = rx * sy - ry * sx;
+    if denominator == 0.0 {
+        return None;
+    }
+    let t = (((b0.0 - a0.0) as f64) * sy - ((b0.1 - a0.1) as f64) * sx) / denominator;
+    Some((
+        (a0x + t * rx).round() as i128,
+        (a0y + t * ry).round() as i128,
+    ))
+}
+
+/// Planarize the input so no two segments cross mid-span: every crossing or
+/// t-junction is split at its intersection point, which becomes a shared
+/// endpoint of both segments. Grade-separated OSM crossings (bridges/tunnels
+/// without a shared node) are what boostvoronoi rejects, so this makes the
+/// road network safe to feed to the builder while preserving cell -> way ids.
+fn planarize_segments(
+    segments: Vec<Line<i64>>,
+    segment_ways: Vec<i64>,
+) -> (Vec<Line<i64>>, Vec<i64>) {
+    let coords: Vec<((i128, i128), (i128, i128))> = segments
+        .iter()
+        .map(|line| {
+            (
+                (line.start.x as i128, line.start.y as i128),
+                (line.end.x as i128, line.end.y as i128),
+            )
+        })
+        .collect();
+
+    let mut cuts: Vec<Vec<(i128, i128)>> = vec![Vec::new(); coords.len()];
+    let mut order: Vec<usize> = (0..coords.len()).collect();
+    order.sort_by_key(|&i| coords[i].0.0.min(coords[i].1.0));
+
+    let mut active: Vec<usize> = Vec::new();
+    for &i in &order {
+        let (ai0, ai1) = coords[i];
+        let i_min_x = ai0.0.min(ai1.0);
+        active.retain(|&j| coords[j].0.0.max(coords[j].1.0) >= i_min_x);
+        for &j in &active {
+            let (bj0, bj1) = coords[j];
+            let split = matches!(
+                classify_conflict(ai0, ai1, bj0, bj1),
+                Some(SegmentConflict::Crossing | SegmentConflict::TJunction)
+            );
+            if split && let Some(point) = intersection_point(ai0, ai1, bj0, bj1) {
+                cuts[i].push(point);
+                cuts[j].push(point);
+            }
+        }
+        active.push(i);
+    }
+
+    let mut new_segments = Vec::with_capacity(segments.len());
+    let mut new_ways = Vec::with_capacity(segment_ways.len());
+    for (index, &(a0, a1)) in coords.iter().enumerate() {
+        let direction = (a1.0 - a0.0, a1.1 - a0.1);
+        let full = direction.0 * direction.0 + direction.1 * direction.1;
+        // Keep only cut points strictly interior to the segment, ordered along it.
+        let mut interior: Vec<(i128, (i128, i128))> = cuts[index]
+            .iter()
+            .filter_map(|&point| {
+                let projected = (point.0 - a0.0) * direction.0 + (point.1 - a0.1) * direction.1;
+                (projected > 0 && projected < full).then_some((projected, point))
+            })
+            .collect();
+        interior.sort_by_key(|(projected, _)| *projected);
+
+        let mut points = vec![a0];
+        for (_, point) in interior {
+            if *points.last().expect("seeded with a0") != point {
+                points.push(point);
+            }
+        }
+        if *points.last().expect("seeded with a0") != a1 {
+            points.push(a1);
+        }
+
+        for pair in points.windows(2) {
+            let (start, end) = (pair[0], pair[1]);
+            new_segments.push(Line::new(
+                Point::new(start.0 as i64, start.1 as i64),
+                Point::new(end.0 as i64, end.1 as i64),
+            ));
+            new_ways.push(segment_ways[index]);
+        }
+    }
+
+    (new_segments, new_ways)
+}
+
 async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
     let ways = grid_way::Entity::find()
         .order_by_id_asc()
@@ -114,11 +357,20 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
         segment_ways.len()
     );
 
-    let diagram = Builder::<i64>::default()
-        .with_segments(segment_pairs)
-        .map_err(|err| format!("Failed to add segments to voronoi builder: {err}"))?
-        .build()
-        .map_err(|err| format!("Failed to build voronoi diagram: {err}"))?;
+    let (segment_pairs, segment_ways) = planarize_segments(segment_pairs, segment_ways);
+    report_invalid_segments(&segment_pairs, &segment_ways);
+
+    // boostvoronoi panics (rather than errors) on illegal geometry, so contain it.
+    let diagram = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        Builder::<i64>::default()
+            .with_segments(segment_pairs.iter())
+            .map_err(|err| format!("Failed to add segments to voronoi builder: {err}"))?
+            .build()
+            .map_err(|err| format!("Failed to build voronoi diagram: {err}"))
+    }))
+    .map_err(|_| {
+        "Voronoi build panicked on illegal segment geometry. See the invalid segment pairs logged above.".to_string()
+    })??;
     let mut polygons: HashMap<i64, Vec<Polygon<f64>>> = HashMap::new();
     for cell in diagram.cells().iter() {
         // combine continue/filter & map into a single iter operation?
