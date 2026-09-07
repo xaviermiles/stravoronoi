@@ -3,11 +3,9 @@ use crate::components::grid_toggle::get_show_grid_storage_value;
 use crate::strava::{self, LoadState};
 use chrono::{DateTime, Utc};
 use geojson::{Feature, GeoJson};
-use mapboxgl::Source;
-use mapboxgl::layer::{IntoLayer, Layer, RasterLayer};
+use mapboxgl::layer::CircleLayer;
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
-use mapboxgl::style::Sources;
-use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, Style, event};
+use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, event};
 use std::time::Duration;
 use std::{cell::RefCell, rc::Rc};
 use web_sys::wasm_bindgen::JsCast;
@@ -20,6 +18,7 @@ pub use grid::set_grid_visible;
 mod hit_testing;
 use hit_testing::distance_to_run_squared;
 
+const CARTO_API_KEY: &str = env!("CARTO_API_KEY");
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 
 /// Shared handle to the map, populated once the map has been created.
@@ -280,40 +279,11 @@ fn set_cursor(map: &Map, cursor: &str) {
 }
 
 fn create_map() -> Rc<Map> {
-    let mut sources = Sources::new();
-    sources.insert(
-        "carto-light".into(),
-        Source {
-            r#type: "raster".into(),
-            // The @2x is to avoid upscaling blue to make the rendering sharper on HiDPI screens.
-            tiles: Some(vec![
-                "https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
-                "https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
-                "https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
-                "https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}@2x.png".into(),
-            ]),
-            ..Default::default()
-        },
-    );
-    let layers: Vec<Layer> = vec![
-        RasterLayer {
-            id: "carto-light-layer".into(),
-            source: "carto-light".into(),
-            minzoom: Some(0.0),
-            maxzoom: Some(21.0),
-            ..Default::default()
-        }
-        .into_layer(),
-    ];
-
     // The default coordinates are Christchurch.
     let opts = MapOptions::new(MAPBOX_TOKEN.into(), "map".into())
-        .style(Style {
-            version: 8,
-            sources,
-            layers,
-            ..Default::default()
-        })
+        .style_ref(format!(
+            "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json?key={CARTO_API_KEY}"
+        ))
         .center(LngLat::new(172.637491, -43.530950))
         .zoom(13.0);
 
