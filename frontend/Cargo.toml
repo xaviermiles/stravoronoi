@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-boostvoronoi = "0.12.1"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10.4"
 comms = { path = "../comms" }

@@ -5,9 +5,12 @@ edition = "2024"
 
 [dependencies]
 axum = "0.8.9"
+boostvoronoi = "0.12.1"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6.6", features = ["derive"] }
 comms = { path = "../comms" }
 geo-types = "0.7.19"
+geo = "0.33.1"
 geojson = "0.24"
 gloo-net = "0.7.0"
 mapboxgl = "0.7.0"

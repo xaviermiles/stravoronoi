@@ -8,9 +8,12 @@ use yew::platform::time;
 
 const WAIT: Duration = Duration::from_millis(50);
 
-async fn get_feature_collection(url: &str) -> FeatureCollection {
+async fn get_feature_collection(endpoint: &str) -> FeatureCollection {
     let response = loop {
-        match Request::get(url).send().await {
+        match Request::get(&format!("{BACKEND_BASE_URL}/api/grid/{endpoint}"))
+            .send()
+            .await
+        {
             Ok(response) => {
                 if response.status() == StatusCode::NO_CONTENT {
                     time::sleep(WAIT).await;
@@ -28,9 +31,13 @@ async fn get_feature_collection(url: &str) -> FeatureCollection {
 }
 
 pub async fn get_all_ways() -> FeatureCollection {
-    get_feature_collection(&format!("{BACKEND_BASE_URL}/api/grid/ways")).await
+    get_feature_collection("ways").await
 }
 
 pub async fn get_intersections() -> FeatureCollection {
-    get_feature_collection(&format!("{BACKEND_BASE_URL}/api/grid/intersections")).await
+    get_feature_collection("intersections").await
+}
+
+pub async fn get_voronoi_cells() -> FeatureCollection {
+    get_feature_collection("cells").await
 }

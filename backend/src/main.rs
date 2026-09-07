@@ -3,6 +3,7 @@ use axum::{
     http::{HeaderValue, Method, header},
     routing::{get, post},
 };
+use clap::Parser;
 use sea_orm::DatabaseConnection;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -46,7 +47,10 @@ struct AppState {
     backfilling_athletes: Arc<Mutex<HashSet<i64>>>,
 }
 
-async fn init_app_state() -> AppState {
+async fn init_app_state(clean_database: bool) -> AppState {
+    if clean_database {
+        models::clean_database();
+    }
     let database = models::connect_database()
         .await
         .expect("need a database connection");
@@ -62,10 +66,16 @@ async fn init_app_state() -> AppState {
     tokio::spawn(async move {
         match road_grid::seed(&seed_database).await {
             Ok(()) => is_grid_ready.store(true, Ordering::Release),
-            Err(err) => tracing::warn!("Failed to seed road grid: {err}"),
+            Err(err) => tracing::error!("Failed to seed road grid: {err}"),
         }
     });
     state
+}
+
+#[derive(Parser)]
+struct Args {
+    #[arg(short, long)]
+    clean: bool,
 }
 
 #[tokio::main]
@@ -75,7 +85,8 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let state = init_app_state().await;
+    let args = Args::parse();
+    let state = init_app_state(args.clean).await;
 
     let frontend_base_url = Url::parse(FRONTEND_URL)
         .expect("Defined statically")
@@ -99,6 +110,7 @@ async fn main() {
             "/api/grid/intersections",
             get(routes::grid::get_intersections),
         )
+        .route("/api/grid/cells", get(routes::grid::get_cells))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         // CORS layer goes last so it executes first for incoming requests and wraps everything else.
