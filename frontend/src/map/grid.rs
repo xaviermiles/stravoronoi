@@ -78,5 +78,5 @@ pub async fn add_grid_layers(map: &Map, is_grid_visible: bool) {
     map.add_geojson_source("cells", GeoJson::FeatureCollection(cells))
         .unwrap();
 
-    set_grid_visible(&map, is_grid_visible);
+    set_grid_visible(map, is_grid_visible);
 }

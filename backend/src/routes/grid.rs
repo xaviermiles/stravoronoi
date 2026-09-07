@@ -1,6 +1,6 @@
 /// Endpoints for the road grid.
 use crate::AppState;
-use crate::models::{grid_cell, grid_way, grid_node};
+use crate::models::{grid_cell, grid_node, grid_way};
 use crate::road_grid;
 use axum::Json;
 use axum::extract::State;

@@ -3,7 +3,6 @@ use crate::components::grid_toggle::get_show_grid_storage_value;
 use crate::strava::{self, LoadState};
 use chrono::{DateTime, Utc};
 use geojson::{Feature, GeoJson};
-use mapboxgl::layer::CircleLayer;
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
 use mapboxgl::{LngLat, Map, MapEventListener, MapOptions, event};
 use std::time::Duration;

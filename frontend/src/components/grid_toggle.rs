@@ -28,7 +28,7 @@ impl PartialEq for GridToggleProps {
 #[function_component]
 #[allow(non_snake_case)]
 pub fn GridToggle(props: &GridToggleProps) -> Html {
-    let grid_visible = use_state(|| get_show_grid_storage_value());
+    let grid_visible = use_state(get_show_grid_storage_value);
     let on_toggle = {
         let map = props.map.clone();
         let grid_visible = grid_visible.clone();

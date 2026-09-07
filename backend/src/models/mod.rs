@@ -14,6 +14,7 @@ pub mod session;
 const DATABASE_FILENAME: &str = "stravoronoi.db";
 
 pub fn clean_database() {
+    tracing::info!("Deleting database");
     if let Err(err) = fs::remove_file(DATABASE_FILENAME) {
         tracing::error!("{err}");
     }
