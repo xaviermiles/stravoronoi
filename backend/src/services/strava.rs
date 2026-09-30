@@ -314,6 +314,13 @@ pub enum FetchError {
     Other(String),
 }
 
+#[derive(Debug)]
+pub enum FetchEpoch {
+    Before(DateTime<Utc>),
+    After(DateTime<Utc>),
+    All,
+}
+
 /// Fetch the most recent activities for the authenticated athlete.
 ///
 /// before_epoch: An epoch timestamp to use for filtering activities that have taken place before a certain time.
@@ -321,11 +328,16 @@ pub enum FetchError {
 /// https://developers.strava.com/docs/reference/#api-Activities-getLoggedInAthleteActivities
 pub async fn fetch_activities(
     access_token: &str,
-    before_epoch: Option<DateTime<Utc>>,
+    epoch: &FetchEpoch,
 ) -> Result<Vec<SummaryActivity>, FetchError> {
-    let url = match before_epoch {
-        Some(before_epoch) => format!("{ACTIVITIES_URL}?before={}", before_epoch.timestamp()),
-        None => ACTIVITIES_URL.to_string(),
+    let url = match epoch {
+        FetchEpoch::Before(before_epoch) => {
+            format!("{ACTIVITIES_URL}?before={}", before_epoch.timestamp())
+        }
+        FetchEpoch::After(after_epoch) => {
+            format!("{ACTIVITIES_URL}?after={}", after_epoch.timestamp())
+        }
+        FetchEpoch::All => ACTIVITIES_URL.to_string(),
     };
 
     get_strava_api(&url, access_token, "activities").await

@@ -32,6 +32,8 @@ pub const BACKEND_BASE_URL: &str = if cfg!(debug_assertions) {
     "https://stravoronoi-production.up.railway.app"
 };
 
+type FillAthleteSet = Arc<Mutex<HashSet<i64>>>;
+
 /// Shared state handed to every request handler.
 #[derive(Clone)]
 struct AppState {
@@ -44,7 +46,13 @@ struct AppState {
     ///
     /// Used to ensure only one backfill runs per athlete at a time, so repeated
     /// initial requests from the frontend don't each spawn a duplicate fetch.
-    backfilling_athletes: Arc<Mutex<HashSet<i64>>>,
+    backfilling_athletes: FillAthleteSet,
+    /// Athlete IDs that currently have a background run forwardfill in progress.
+    ///
+    /// No data will be returned while a forwardfill is in progress, since the frontend
+    /// only paginates backwards in time, so it needs to wait for the most recent run
+    /// before it can start paginating without losing any data.
+    forwardfilling_athletes: FillAthleteSet,
 }
 
 async fn init_app_state(clean_database: bool) -> AppState {
@@ -59,6 +67,7 @@ async fn init_app_state(clean_database: bool) -> AppState {
         database,
         is_grid_ready: is_grid_ready.clone(),
         backfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
+        forwardfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
     };
 
     // Seed the road grid without blocking.
@@ -81,7 +90,7 @@ struct Args {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::filter::LevelFilter::INFO)
+        .with(tracing_subscriber::filter::LevelFilter::WARN)
         .with(tracing_subscriber::fmt::layer())
         .init();
 

@@ -13,13 +13,11 @@ use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
 use sea_orm::{ActiveModelTrait, QueryOrder, Select};
 use serde::Deserialize;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, sleep};
 
-use crate::services::strava::FetchError;
+use crate::services::strava::{FetchEpoch, FetchError};
 use crate::session::AuthedAthlete;
-use crate::{AppState, models, services};
+use crate::{AppState, FillAthleteSet, models, services};
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
@@ -29,16 +27,16 @@ const POLYLINE_PRECISION: u32 = 5;
 const START_WAIT: Duration = Duration::from_millis(100);
 const MAX_WAIT: Duration = Duration::from_secs(2);
 
-/// Removes an athlete from the in-flight backfill set when dropped.
+/// Removes an athlete from the in-flight fill athlete set when dropped.
 ///
-/// Holding this in the spawned backfill task guarantees the athlete is cleared
+/// Holding this in the spawned *fill task guarantees the athlete is cleared
 /// once the task finishes, whether it returns normally, errors, or panics.
-struct BackfillGuard {
-    athletes: Arc<Mutex<HashSet<i64>>>,
+struct FillAthleteGuard {
+    athletes: FillAthleteSet,
     athlete_id: i64,
 }
 
-impl Drop for BackfillGuard {
+impl Drop for FillAthleteGuard {
     fn drop(&mut self) {
         if let Ok(mut athletes) = self.athletes.lock() {
             athletes.remove(&self.athlete_id);
@@ -106,7 +104,7 @@ async fn valid_access_token(
     Ok(access_token)
 }
 
-/// Start fetching older runs before a given time.
+/// Fetch older runs before a given time.
 ///
 /// If no time is given then all runs will be fetched.
 async fn fetch_older_runs(
@@ -119,7 +117,12 @@ async fn fetch_older_runs(
 
     let mut current_wait = START_WAIT;
     loop {
-        let activities = match services::strava::fetch_activities(&access_token, before_epoch).await
+        let fetch_epoch = if let Some(before) = before_epoch {
+            FetchEpoch::Before(before)
+        } else {
+            FetchEpoch::All
+        };
+        let activities = match services::strava::fetch_activities(&access_token, &fetch_epoch).await
         {
             Ok(activities) => activities,
             Err(FetchError::Backoff) => {
@@ -181,6 +184,74 @@ async fn fetch_older_runs(
     Ok(())
 }
 
+/// Fetch newer runs before the most recent run in the database.
+///
+/// This panics if there is no downloaded runs.
+async fn fetch_newer_runs(database: &DatabaseConnection, athlete_id: i64) -> Result<(), String> {
+    let newest_downloaded_run = find_runs(athlete_id)
+        .order_by_desc(models::run::COLUMN.start_date)
+        .one(database)
+        .await
+        .unwrap()
+        .expect("this should only be called if there is any runs");
+    let mut after_epoch = FetchEpoch::After(*newest_downloaded_run.start_date);
+
+    let access_token = valid_access_token(database, athlete_id).await?;
+    tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
+
+    let mut current_wait = START_WAIT;
+    loop {
+        let activities = match services::strava::fetch_activities(&access_token, &after_epoch).await
+        {
+            Ok(activities) => activities,
+            Err(FetchError::Backoff) => {
+                current_wait *= 2;
+                if current_wait > MAX_WAIT {
+                    return Err("time out during backoff".to_string());
+                }
+                sleep(current_wait).await;
+                continue;
+            }
+            Err(FetchError::Other(message)) => return Err(message),
+        };
+        tracing::info!(
+            "Fetched {} activities for athlete_id={athlete_id} and after_epoch={after_epoch:?}",
+            activities.len()
+        );
+        // Reset wait since we weren't told to backoff.
+        current_wait = START_WAIT;
+        after_epoch = match activities.last() {
+            Some(final_activity) => FetchEpoch::After(final_activity.start_date),
+            // No activities.
+            None => break,
+        };
+        let runs: Vec<_> = activities
+            .iter()
+            .filter(|activity| activity.is_run())
+            .map(|activity| {
+                // TODO: can clones be avoided?
+                models::run::ActiveModel {
+                    strava_activity_id: Set(activity.id),
+                    athlete_id: Set(athlete_id),
+                    name: Set(activity.name.clone()),
+                    distance: Set(activity.distance as i64),
+                    moving_time: Set(activity.moving_time),
+                    start_date: Set(activity.start_date.into()),
+                    summary_map: Set(activity.map.summary_polyline.clone()),
+                    is_first_run: Set(false), // this will updated afterwards.
+                }
+            })
+            .collect();
+        models::run::Entity::insert_many(runs)
+            .exec(database)
+            .await
+            .map_err(|err| format!("Error while inserting runs: {err}"))?;
+        sleep(current_wait).await;
+    }
+
+    Ok(())
+}
+
 /// Return a query to find the runs for a given athlete.
 fn find_runs(athlete_id: i64) -> Select<models::run::Entity> {
     models::run::Entity::find().filter(models::run::COLUMN.athlete_id.eq(athlete_id))
@@ -211,7 +282,15 @@ pub async fn get_runs(
     athlete: AuthedAthlete,
     Query(params): Query<RunQuery>,
 ) -> Response {
-    // TODO: fetch newer activities.
+    if state
+        .forwardfilling_athletes
+        .lock()
+        .expect("forwardfill set mutex poisoned")
+        .contains(&athlete.athlete_id)
+    {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+
     let mut athlete_runs =
         find_runs(athlete.athlete_id).order_by_desc(models::run::COLUMN.start_date);
 
@@ -224,8 +303,8 @@ pub async fn get_runs(
     let oldest_downloaded_run =
         find_oldest_downloaded_run(&state.database, athlete.athlete_id).await;
     // If there is any runs, then we should check for runs since the user was last logged in.
-    let should_forwardfill = oldest_downloaded_run.is_some();
-    let backfill_complete = oldest_downloaded_run
+    let is_forwardfill_applicable = oldest_downloaded_run.is_some();
+    let is_backfill_complete = oldest_downloaded_run
         .as_ref()
         .is_some_and(|run| run.is_first_run);
 
@@ -237,7 +316,7 @@ pub async fn get_runs(
             // Assume this is the first of multiple paginated requests from the frontend.
             // Only need to fetch older runs if the backfill hasn't already completed and there
             // isn't an existing backfill in-flight.
-            let should_backfill = !backfill_complete
+            let should_backfill = !is_backfill_complete
                 && state
                     .backfilling_athletes
                     .lock()
@@ -245,7 +324,7 @@ pub async fn get_runs(
                     .insert(athlete.athlete_id);
             if should_backfill {
                 let before_epoch = oldest_downloaded_run.map(|run| *run.start_date);
-                let guard = BackfillGuard {
+                let guard = FillAthleteGuard {
                     athletes: state.backfilling_athletes.clone(),
                     athlete_id: athlete.athlete_id,
                 };
@@ -261,20 +340,33 @@ pub async fn get_runs(
                     };
                 });
             }
+            let should_forwardfill = is_forwardfill_applicable
+                && state
+                    .forwardfilling_athletes
+                    .lock()
+                    .expect("forwardfill set mutex poisoned")
+                    .insert(athlete.athlete_id);
             if should_forwardfill {
-                let newest_downloaded_run = find_runs(athlete.athlete_id)
-                    .order_by_asc(models::run::COLUMN.start_date)
-                    .one(&state.database)
-                    .await
-                    .unwrap()
-                    .expect("there is an oldest run");
+                let guard = FillAthleteGuard {
+                    athletes: state.forwardfilling_athletes.clone(),
+                    athlete_id: athlete.athlete_id,
+                };
+                tokio::spawn(async move {
+                    let _guard = guard;
+                    let database = models::connect_database()
+                        .await
+                        .expect("need a database connection");
+                    if let Err(err) = fetch_newer_runs(&database, athlete.athlete_id).await {
+                        tracing::error!("{err}");
+                    }
+                });
             }
         }
     }
     match athlete_runs.limit(10).all(&state.database).await {
         Ok(runs) => {
             let status_code = if runs.is_empty() {
-                if backfill_complete {
+                if is_backfill_complete {
                     // There is nothing more to poll for.
                     StatusCode::OK
                 } else {
