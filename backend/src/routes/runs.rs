@@ -271,6 +271,63 @@ async fn find_oldest_downloaded_run(
         .unwrap()
 }
 
+/// Maybe start backfilling and forwardfilling runs.
+fn maybe_start_filling_runs(
+    state: &AppState,
+    athlete_id: i64,
+    oldest_downloaded_run: Option<models::run::Model>,
+    is_backfill_complete: bool,
+    is_forwardfill_needed: bool,
+) {
+    // Only need to fetch older runs if the backfill hasn't already completed and there
+    // isn't an existing backfill in-flight.
+    let should_backfill = !is_backfill_complete
+        && state
+            .backfilling_athletes
+            .lock()
+            .expect("backfill set mutex poisoned")
+            .insert(athlete_id);
+    if should_backfill {
+        let before_epoch = oldest_downloaded_run.map(|run| *run.start_date);
+        let guard = FillAthleteGuard {
+            athletes: state.backfilling_athletes.clone(),
+            athlete_id: athlete_id,
+        };
+        tokio::spawn(async move {
+            let _guard = guard;
+            let database = models::connect_database()
+                .await
+                .expect("need a database connection");
+            if let Err(err) = fetch_older_runs(&database, athlete_id, before_epoch).await {
+                tracing::error!("{err}");
+            };
+        });
+    }
+
+    // Similarly, only need to forwardfill if there isn't an existing one in-flight.
+    let should_forwardfill = is_forwardfill_needed
+        && state
+            .forwardfilling_athletes
+            .lock()
+            .expect("forwardfill set mutex poisoned")
+            .insert(athlete_id);
+    if should_forwardfill {
+        let guard = FillAthleteGuard {
+            athletes: state.forwardfilling_athletes.clone(),
+            athlete_id: athlete_id,
+        };
+        tokio::spawn(async move {
+            let _guard = guard;
+            let database = models::connect_database()
+                .await
+                .expect("need a database connection");
+            if let Err(err) = fetch_newer_runs(&database, athlete_id).await {
+                tracing::error!("{err}");
+            }
+        });
+    }
+}
+
 #[derive(Deserialize)]
 pub struct RunQuery {
     pub before: Option<i64>,
@@ -288,6 +345,7 @@ pub async fn get_runs(
         .expect("forwardfill set mutex poisoned")
         .contains(&athlete.athlete_id)
     {
+        tracing::error!("forwardfill in progress according to lock");
         return StatusCode::NO_CONTENT.into_response();
     }
 
@@ -303,7 +361,7 @@ pub async fn get_runs(
     let oldest_downloaded_run =
         find_oldest_downloaded_run(&state.database, athlete.athlete_id).await;
     // If there is any runs, then we should check for runs since the user was last logged in.
-    let is_forwardfill_applicable = oldest_downloaded_run.is_some();
+    let is_forwardfill_needed = oldest_downloaded_run.is_some();
     let is_backfill_complete = oldest_downloaded_run
         .as_ref()
         .is_some_and(|run| run.is_first_run);
@@ -312,56 +370,13 @@ pub async fn get_runs(
         Some(before_epoch) => {
             athlete_runs = athlete_runs.filter(models::run::COLUMN.start_date.lt(before_epoch))
         }
-        None => {
-            // Assume this is the first of multiple paginated requests from the frontend.
-            // Only need to fetch older runs if the backfill hasn't already completed and there
-            // isn't an existing backfill in-flight.
-            let should_backfill = !is_backfill_complete
-                && state
-                    .backfilling_athletes
-                    .lock()
-                    .expect("backfill set mutex poisoned")
-                    .insert(athlete.athlete_id);
-            if should_backfill {
-                let before_epoch = oldest_downloaded_run.map(|run| *run.start_date);
-                let guard = FillAthleteGuard {
-                    athletes: state.backfilling_athletes.clone(),
-                    athlete_id: athlete.athlete_id,
-                };
-                tokio::spawn(async move {
-                    let _guard = guard;
-                    let database = models::connect_database()
-                        .await
-                        .expect("need a database connection");
-                    if let Err(err) =
-                        fetch_older_runs(&database, athlete.athlete_id, before_epoch).await
-                    {
-                        tracing::error!("{err}");
-                    };
-                });
-            }
-            let should_forwardfill = is_forwardfill_applicable
-                && state
-                    .forwardfilling_athletes
-                    .lock()
-                    .expect("forwardfill set mutex poisoned")
-                    .insert(athlete.athlete_id);
-            if should_forwardfill {
-                let guard = FillAthleteGuard {
-                    athletes: state.forwardfilling_athletes.clone(),
-                    athlete_id: athlete.athlete_id,
-                };
-                tokio::spawn(async move {
-                    let _guard = guard;
-                    let database = models::connect_database()
-                        .await
-                        .expect("need a database connection");
-                    if let Err(err) = fetch_newer_runs(&database, athlete.athlete_id).await {
-                        tracing::error!("{err}");
-                    }
-                });
-            }
-        }
+        None => maybe_start_filling_runs(
+            &state,
+            athlete.athlete_id,
+            oldest_downloaded_run,
+            is_backfill_complete,
+            is_forwardfill_needed,
+        ),
     }
     match athlete_runs.limit(10).all(&state.database).await {
         Ok(runs) => {
