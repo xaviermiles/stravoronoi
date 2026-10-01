@@ -90,7 +90,7 @@ struct Args {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::registry()
-        .with(tracing_subscriber::filter::LevelFilter::WARN)
+        .with(tracing_subscriber::filter::LevelFilter::INFO)
         .with(tracing_subscriber::fmt::layer())
         .init();
 

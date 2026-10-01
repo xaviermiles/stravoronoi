@@ -114,7 +114,6 @@ async fn insert_activities(
         .iter()
         .filter(|activity| activity.is_run())
         .map(|activity| {
-            // TODO: can clones be avoided?
             models::run::ActiveModel {
                 strava_activity_id: Set(activity.id),
                 athlete_id: Set(athlete_id),
