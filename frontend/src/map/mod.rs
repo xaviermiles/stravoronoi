@@ -236,7 +236,9 @@ impl MapEventListener for RunClickListener {
 
         let popup = mapboxgl::Popup::new(
             LngLat::new(e.lng_lat.lng, e.lng_lat.lat),
-            mapboxgl::PopupOptions::new(),
+            mapboxgl::PopupOptions {
+                class_name: Some("run-popup".into()),
+            },
         );
         popup.set_html(popup_text);
         popup.add_to(&map);
