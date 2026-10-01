@@ -15,7 +15,7 @@ use sea_orm::{ActiveModelTrait, QueryOrder, Select};
 use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
-use crate::services::strava::{FetchEpoch, FetchError};
+use crate::services::strava::{FetchEpoch, FetchError, SummaryActivity};
 use crate::session::AuthedAthlete;
 use crate::{AppState, FillAthleteSet, models, services};
 
@@ -104,72 +104,114 @@ async fn valid_access_token(
     Ok(access_token)
 }
 
+/// Insert activities into the 'runs' table of the database.
+async fn insert_activities(
+    activities: Vec<SummaryActivity>,
+    athlete_id: i64,
+    database: &DatabaseConnection,
+) -> Result<(), String> {
+    let runs: Vec<_> = activities
+        .iter()
+        .filter(|activity| activity.is_run())
+        .map(|activity| {
+            // TODO: can clones be avoided?
+            models::run::ActiveModel {
+                strava_activity_id: Set(activity.id),
+                athlete_id: Set(athlete_id),
+                name: Set(activity.name.clone()),
+                distance: Set(activity.distance as i64),
+                moving_time: Set(activity.moving_time),
+                start_datetime: Set(activity.start_date.into()),
+                summary_map: Set(activity.map.summary_polyline.clone()),
+                is_first_run: Set(false), // this will updated afterwards.
+            }
+        })
+        .collect();
+    match models::run::Entity::insert_many(runs).exec(database).await {
+        Ok(_) => Ok(()),
+        Err(err) => Err(format!("Error while inserting runs: {err}")),
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum FetchCursor {
+    Older(Option<DateTime<Utc>>),
+    Newer(DateTime<Utc>),
+}
+
+impl FetchCursor {
+    fn fetch_epoch(self) -> FetchEpoch {
+        match self {
+            Self::Older(Some(before)) => FetchEpoch::Before(before),
+            Self::Older(None) => FetchEpoch::All,
+            Self::Newer(after) => FetchEpoch::After(after),
+        }
+    }
+
+    fn next(self, activities: &[SummaryActivity]) -> Option<Self> {
+        match self {
+            Self::Older(_) => activities
+                .last()
+                .map(|activity| Self::Older(Some(activity.start_date))),
+            Self::Newer(_) => activities
+                .first()
+                .map(|activity| Self::Newer(activity.start_date)),
+        }
+    }
+}
+
+/// Fetch and insert activity pages, advancing the cursor in the requested direction.
+async fn fetch_activity_pages(
+    database: &DatabaseConnection,
+    athlete_id: i64,
+    mut cursor: FetchCursor,
+) -> Result<(), String> {
+    let access_token = valid_access_token(database, athlete_id).await?;
+    tracing::info!("Start fetching runs for athlete_id={athlete_id:?} cursor={cursor:?}");
+
+    let mut current_wait = START_WAIT;
+    loop {
+        let activities =
+            match services::strava::fetch_activities(&access_token, &cursor.fetch_epoch()).await {
+                Ok(activities) => activities,
+                Err(FetchError::Backoff) => {
+                    current_wait *= 2;
+                    if current_wait > MAX_WAIT {
+                        return Err("time out during backoff".to_string());
+                    }
+                    sleep(current_wait).await;
+                    continue;
+                }
+                Err(FetchError::Other(message)) => return Err(message),
+            };
+        tracing::info!(
+            "Fetched {} activities for athlete_id={athlete_id} and cursor={cursor:?}",
+            activities.len(),
+        );
+        // Reset wait since we weren't told to backoff.
+        current_wait = START_WAIT;
+        let Some(next_cursor) = cursor.next(&activities) else {
+            break;
+        };
+        insert_activities(activities, athlete_id, database).await?;
+        cursor = next_cursor;
+        sleep(current_wait).await;
+    }
+    tracing::info!("Finish fetching runs for athlete_id={athlete_id:?} cursor={cursor:?}");
+    Ok(())
+}
+
 /// Fetch older runs before a given time.
 ///
 /// If no time is given then all runs will be fetched.
 async fn fetch_older_runs(
     database: &DatabaseConnection,
     athlete_id: i64,
-    mut before_epoch: Option<DateTime<Utc>>,
+    before_epoch: Option<DateTime<Utc>>,
 ) -> Result<(), String> {
-    let access_token = valid_access_token(database, athlete_id).await?;
-    tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
+    fetch_activity_pages(database, athlete_id, FetchCursor::Older(before_epoch)).await?;
 
-    let mut current_wait = START_WAIT;
-    loop {
-        let fetch_epoch = if let Some(before) = before_epoch {
-            FetchEpoch::Before(before)
-        } else {
-            FetchEpoch::All
-        };
-        let activities = match services::strava::fetch_activities(&access_token, &fetch_epoch).await
-        {
-            Ok(activities) => activities,
-            Err(FetchError::Backoff) => {
-                current_wait *= 2;
-                if current_wait > MAX_WAIT {
-                    return Err("time out during backoff".to_string());
-                }
-                sleep(current_wait).await;
-                continue;
-            }
-            Err(FetchError::Other(message)) => return Err(message),
-        };
-        tracing::info!(
-            "Fetched {} activities for athlete_id={athlete_id} and before_epoch={before_epoch:?}",
-            activities.len()
-        );
-        // Reset wait since we weren't told to backoff.
-        current_wait = START_WAIT;
-        before_epoch = match activities.last() {
-            Some(final_activity) => Some(final_activity.start_date),
-            // No activities.
-            None => break,
-        };
-        let runs: Vec<_> = activities
-            .iter()
-            .filter(|activity| activity.is_run())
-            .map(|activity| {
-                // TODO: can clones be avoided?
-                models::run::ActiveModel {
-                    strava_activity_id: Set(activity.id),
-                    athlete_id: Set(athlete_id),
-                    name: Set(activity.name.clone()),
-                    distance: Set(activity.distance as i64),
-                    moving_time: Set(activity.moving_time),
-                    start_datetime: Set(activity.start_date.into()),
-                    summary_map: Set(activity.map.summary_polyline.clone()),
-                    is_first_run: Set(false), // this will updated afterwards.
-                }
-            })
-            .collect();
-        models::run::Entity::insert_many(runs)
-            .exec(database)
-            .await
-            .map_err(|err| format!("Error while inserting runs: {err}"))?;
-        sleep(current_wait).await;
-    }
-    // If the loop above finished without returning an Err, then we know all the previous runs have been downloaded.
+    // If the fetching above finished without returning an Err, then we know all the previous runs have been downloaded.
     // Update the final run in the database to know it is the final one.
     if let Some(final_run) = find_oldest_downloaded_run(database, athlete_id).await {
         let mut final_run_active: models::run::ActiveModel = final_run.into();
@@ -190,66 +232,9 @@ async fn fetch_older_runs(
 async fn fetch_newer_runs(
     database: &DatabaseConnection,
     athlete_id: i64,
-    mut after_epoch: DateTime<Utc>,
+    after_epoch: DateTime<Utc>,
 ) -> Result<(), String> {
-    let access_token = valid_access_token(database, athlete_id).await?;
-    tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
-
-    let mut current_wait = START_WAIT;
-    loop {
-        let activities = match services::strava::fetch_activities(
-            &access_token,
-            &FetchEpoch::After(after_epoch),
-        )
-        .await
-        {
-            Ok(activities) => activities,
-            Err(FetchError::Backoff) => {
-                current_wait *= 2;
-                if current_wait > MAX_WAIT {
-                    return Err("time out during backoff".to_string());
-                }
-                sleep(current_wait).await;
-                continue;
-            }
-            Err(FetchError::Other(message)) => return Err(message),
-        };
-        tracing::info!(
-            "Fetched {} activities for athlete_id={athlete_id} and after_epoch={after_epoch:?}",
-            activities.len()
-        );
-        // Reset wait since we weren't told to backoff.
-        current_wait = START_WAIT;
-        after_epoch = match activities.first() {
-            Some(final_activity) => final_activity.start_date,
-            // No activities.
-            None => break,
-        };
-        let runs: Vec<_> = activities
-            .iter()
-            .filter(|activity| activity.is_run())
-            .map(|activity| {
-                // TODO: can clones be avoided?
-                models::run::ActiveModel {
-                    strava_activity_id: Set(activity.id),
-                    athlete_id: Set(athlete_id),
-                    name: Set(activity.name.clone()),
-                    distance: Set(activity.distance as i64),
-                    moving_time: Set(activity.moving_time),
-                    start_datetime: Set(activity.start_date.into()),
-                    summary_map: Set(activity.map.summary_polyline.clone()),
-                    is_first_run: Set(false), // this will updated afterwards.
-                }
-            })
-            .collect();
-        models::run::Entity::insert_many(runs)
-            .exec(database)
-            .await
-            .map_err(|err| format!("Error while inserting runs: {err}"))?;
-        sleep(current_wait).await;
-    }
-
-    tracing::info!("Finished fetching newer runs.");
+    fetch_activity_pages(database, athlete_id, FetchCursor::Newer(after_epoch)).await?;
     Ok(())
 }
 
