@@ -336,10 +336,13 @@ pub async fn any_newer_activities(
     access_token: &str,
     after_epoch: DateTime<Utc>,
 ) -> Result<bool, FetchError> {
-    let url = format!("{ACTIVITIES_URL}?after={}", after_epoch.timestamp());
+    let url = format!(
+        "{ACTIVITIES_URL}?after={}&per_page=1",
+        after_epoch.timestamp()
+    );
     get_strava_api::<Vec<SummaryActivity>>(&url, access_token, "activities")
         .await
-        .map(|activities| activities.is_empty())
+        .map(|activities| !activities.is_empty())
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
