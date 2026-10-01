@@ -137,3 +137,30 @@ button[data-key="log-in"]:focus-visible,
         font-size: 12px;
     }
 }
+
+/* Dock run popups to the bottom of the screen so they don't cover the map. 
+Mapbox sets some of these inline, so use !important to ensure they don't get overriden.
+*/
+.run-popup {
+    position: fixed !important;
+    top: auto !important;
+    left: var(--control-edge) !important;
+    /* Mapbox's inline max-width (240px) was causing line breaks; it looks better to size to the content instead. */
+    width: max-content;
+    max-width: calc(100vw - 2 * var(--control-edge)) !important;
+    /* This is `var(--control-edge) + 20px` so the box sits just above the mapbox logo. */
+    bottom: 32px !important;
+    transform: none !important;
+}
+
+.run-popup .mapboxgl-popup-tip {
+    display: none;
+}
+
+.run-popup .mapboxgl-popup-content {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+    border-radius: var(--control-edge) var(--control-edge) var(--control-edge);
+    box-shadow: 0 -2px 10px rgb(20 28 38 / 18%);
+}
