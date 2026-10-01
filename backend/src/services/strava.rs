@@ -321,6 +321,17 @@ pub enum FetchEpoch {
     All,
 }
 
+/// Return whether there is any activities after the given datetime.
+pub async fn any_newer_activities(
+    access_token: &str,
+    after_epoch: DateTime<Utc>,
+) -> Result<bool, FetchError> {
+    let url = format!("{ACTIVITIES_URL}?after={}", after_epoch.timestamp());
+    get_strava_api::<Vec<SummaryActivity>>(&url, access_token, "activities")
+        .await
+        .map(|activities| activities.is_empty())
+}
+
 /// Fetch the most recent activities for the authenticated athlete.
 ///
 /// before_epoch: An epoch timestamp to use for filtering activities that have taken place before a certain time.

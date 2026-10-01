@@ -187,21 +187,21 @@ async fn fetch_older_runs(
 /// Fetch newer runs before the most recent run in the database.
 ///
 /// This panics if there is no downloaded runs.
-async fn fetch_newer_runs(database: &DatabaseConnection, athlete_id: i64) -> Result<(), String> {
-    let newest_downloaded_run = find_runs(athlete_id)
-        .order_by_desc(models::run::COLUMN.start_date)
-        .one(database)
-        .await
-        .unwrap()
-        .expect("this should only be called if there is any runs");
-    let mut after_epoch = FetchEpoch::After(*newest_downloaded_run.start_date);
-
+async fn fetch_newer_runs(
+    database: &DatabaseConnection,
+    athlete_id: i64,
+    mut after_epoch: DateTime<Utc>,
+) -> Result<(), String> {
     let access_token = valid_access_token(database, athlete_id).await?;
     tracing::info!("Start fetching runs for athlete ID: {athlete_id}");
 
     let mut current_wait = START_WAIT;
     loop {
-        let activities = match services::strava::fetch_activities(&access_token, &after_epoch).await
+        let activities = match services::strava::fetch_activities(
+            &access_token,
+            &FetchEpoch::After(after_epoch),
+        )
+        .await
         {
             Ok(activities) => activities,
             Err(FetchError::Backoff) => {
@@ -220,8 +220,8 @@ async fn fetch_newer_runs(database: &DatabaseConnection, athlete_id: i64) -> Res
         );
         // Reset wait since we weren't told to backoff.
         current_wait = START_WAIT;
-        after_epoch = match activities.last() {
-            Some(final_activity) => FetchEpoch::After(final_activity.start_date),
+        after_epoch = match activities.first() {
+            Some(final_activity) => final_activity.start_date,
             // No activities.
             None => break,
         };
@@ -249,6 +249,7 @@ async fn fetch_newer_runs(database: &DatabaseConnection, athlete_id: i64) -> Res
         sleep(current_wait).await;
     }
 
+    tracing::info!("Finished fetching newer runs.");
     Ok(())
 }
 
@@ -272,13 +273,15 @@ async fn find_oldest_downloaded_run(
 }
 
 /// Maybe start backfilling and forwardfilling runs.
-fn maybe_start_filling_runs(
+///
+/// Return True if the backend should not return any data yet.
+async fn maybe_start_filling_runs(
     state: &AppState,
     athlete_id: i64,
     oldest_downloaded_run: Option<models::run::Model>,
     is_backfill_complete: bool,
-    is_forwardfill_needed: bool,
-) {
+) -> bool {
+    let is_forward_applicable = oldest_downloaded_run.is_some();
     // Only need to fetch older runs if the backfill hasn't already completed and there
     // isn't an existing backfill in-flight.
     let should_backfill = !is_backfill_complete
@@ -304,28 +307,57 @@ fn maybe_start_filling_runs(
         });
     }
 
-    // Similarly, only need to forwardfill if there isn't an existing one in-flight.
-    let should_forwardfill = is_forwardfill_needed
-        && state
-            .forwardfilling_athletes
-            .lock()
-            .expect("forwardfill set mutex poisoned")
-            .insert(athlete_id);
-    if should_forwardfill {
-        let guard = FillAthleteGuard {
-            athletes: state.forwardfilling_athletes.clone(),
-            athlete_id: athlete_id,
-        };
-        tokio::spawn(async move {
-            let _guard = guard;
-            let database = models::connect_database()
-                .await
-                .expect("need a database connection");
-            if let Err(err) = fetch_newer_runs(&database, athlete_id).await {
-                tracing::error!("{err}");
-            }
-        });
+    if !is_forward_applicable {
+        // There is no runs so the backfill (from the present time) will find all runs and
+        // forwardfilling is unnecessary.
+        return false;
     }
+
+    let database = models::connect_database()
+        .await
+        .expect("need a database connection");
+    let access_token = valid_access_token(&database, athlete_id).await.unwrap();
+    // Similarly, only need to forwardfill if there isn't an existing one in-flight.
+    let after_epoch = *find_runs(athlete_id)
+        .order_by_desc(models::run::COLUMN.start_date)
+        .one(&database)
+        .await
+        .unwrap()
+        .expect("there is an oldest_downloaded_run")
+        .start_date;
+    tracing::info!("peeking after_epoch {:?}", after_epoch);
+    // This needs to check for any newer activities otherwise this always forwardfill and never complete.
+    if !services::strava::any_newer_activities(&access_token, after_epoch)
+        .await
+        .unwrap()
+    {
+        tracing::info!("Skipping forwardfill as there is no newer activities.");
+        return false;
+    }
+
+    if !state
+        .forwardfilling_athletes
+        .lock()
+        .expect("forwardfill set mutex poisoned")
+        .insert(athlete_id)
+    {
+        tracing::info!("Need forwardfill but skipping as one already in-flight.");
+        return false;
+    }
+
+    tracing::info!("Starting forwardfill.");
+    let guard = FillAthleteGuard {
+        athletes: state.forwardfilling_athletes.clone(),
+        athlete_id: athlete_id,
+    };
+    tokio::spawn(async move {
+        let _guard = guard;
+        if let Err(err) = fetch_newer_runs(&database, athlete_id, after_epoch).await {
+            tracing::error!("{err}");
+        }
+    });
+    // See AppState.forwardfilling_athletes for why no data should be returned if forwardfilling.
+    true
 }
 
 #[derive(Deserialize)]
@@ -345,7 +377,7 @@ pub async fn get_runs(
         .expect("forwardfill set mutex poisoned")
         .contains(&athlete.athlete_id)
     {
-        tracing::error!("forwardfill in progress according to lock");
+        tracing::error!("forwardfilling in progress according to lock");
         return StatusCode::NO_CONTENT.into_response();
     }
 
@@ -360,8 +392,6 @@ pub async fn get_runs(
     // the background backfill flagging the oldest run).
     let oldest_downloaded_run =
         find_oldest_downloaded_run(&state.database, athlete.athlete_id).await;
-    // If there is any runs, then we should check for runs since the user was last logged in.
-    let is_forwardfill_needed = oldest_downloaded_run.is_some();
     let is_backfill_complete = oldest_downloaded_run
         .as_ref()
         .is_some_and(|run| run.is_first_run);
@@ -370,13 +400,18 @@ pub async fn get_runs(
         Some(before_epoch) => {
             athlete_runs = athlete_runs.filter(models::run::COLUMN.start_date.lt(before_epoch))
         }
-        None => maybe_start_filling_runs(
-            &state,
-            athlete.athlete_id,
-            oldest_downloaded_run,
-            is_backfill_complete,
-            is_forwardfill_needed,
-        ),
+        None => {
+            if maybe_start_filling_runs(
+                &state,
+                athlete.athlete_id,
+                oldest_downloaded_run,
+                is_backfill_complete,
+            )
+            .await
+            {
+                return StatusCode::NO_CONTENT.into_response();
+            }
+        }
     }
     match athlete_runs.limit(10).all(&state.database).await {
         Ok(runs) => {
