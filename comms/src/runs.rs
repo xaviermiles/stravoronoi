@@ -10,8 +10,8 @@ pub struct RunResponse {
     pub distance: i64,
     /// The activity's moving time, in seconds.
     pub moving_time: i64,
-    /// The time at which the activity was started.
-    pub start_date: DateTime<Utc>,
+    /// The datetime at which the activity was started.
+    pub start_datetime: DateTime<Utc>,
     /// The summary map returned from Strava, as a Google Encoded Polyline.
     pub summary_map: String,
 }

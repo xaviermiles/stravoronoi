@@ -53,8 +53,7 @@ pub async fn auth_callback(
     }
 
     match services::strava::exchange_code(&params.code).await {
-        Ok(tokens) => {
-            let athlete_id = tokens.athlete.id;
+        Ok((tokens, athlete_id)) => {
             let existing_athlete = match models::athlete::Entity::find_by_id(athlete_id)
                 .one(&state.database)
                 .await

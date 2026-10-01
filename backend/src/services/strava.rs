@@ -16,7 +16,7 @@ use oauth2::url::Url;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
     EndpointNotSet, EndpointSet, ErrorResponse, ExtraTokenFields, RedirectUrl, RefreshToken,
-    RequestTokenError, Scope, StandardRevocableToken, StandardTokenResponse, TokenResponse as _,
+    RequestTokenError, Scope, StandardRevocableToken, StandardTokenResponse, TokenResponse,
     TokenUrl,
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
@@ -34,7 +34,9 @@ const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 /// standard OAuth fields. We only model the `athlete` object here.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct StravaExtraFields {
-    athlete: StravaAthlete,
+    /// Only present on the code exchange response, not on refresh.
+    #[serde(default)]
+    athlete: Option<StravaAthlete>,
 }
 
 impl ExtraTokenFields for StravaExtraFields {}
@@ -58,18 +60,21 @@ type StravaClient<HasAuthUrl = EndpointNotSet, HasTokenUrl = EndpointNotSet> = C
     HasTokenUrl,
 >;
 
-/// The athlete Strava returns inside the OAuth token response.
+/// The athlete Strava returns inside the OAuth token exchange response.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StravaAthlete {
     pub id: i64,
 }
-/// The subset of Strava's token response that we care about.
+/// Response parameters of Strava's token responses.
+///
+/// For both:
+/// - https://developers.strava.com/docs/authentication/#tokenexchange
+/// - https://developers.strava.com/docs/authentication/#refreshingexpiredaccesstokens
 pub struct StravaTokens {
     pub access_token: String,
     pub refresh_token: String,
     /// Unix timestamp (seconds) at which `access_token` expires.
     pub expires_at: i64,
-    pub athlete: StravaAthlete,
 }
 
 /// Build a Strava OAuth client from environment configuration.
@@ -111,13 +116,19 @@ pub fn authorize_url() -> (Url, CsrfToken) {
 
 /// Exchange an authorization `code` (from the OAuth callback) for a new user's
 /// tokens. The only place the client secret is used for a brand-new user.
-pub async fn exchange_code(code: &str) -> Result<StravaTokens, String> {
+pub async fn exchange_code(code: &str) -> Result<(StravaTokens, i64), String> {
     let token = oauth_client()
         .exchange_code(AuthorizationCode::new(code.to_string()))
         .request_async(&http_client())
         .await
         .map_err(|e| format!("code exchange failed: {}", format_token_error(e)))?;
-    Ok(into_tokens(&token))
+    let athlete_id = token
+        .extra_fields()
+        .athlete
+        .as_ref()
+        .ok_or("code exchange failed: response missing athlete")?
+        .id;
+    Ok((into_tokens(&token), athlete_id))
 }
 
 /// Refresh one user's expired access token using their stored refresh token.
@@ -165,7 +176,6 @@ fn into_tokens(token: &StravaTokenResponse) -> StravaTokens {
             .map(|t| t.secret().to_string())
             .unwrap_or_default(),
         expires_at,
-        athlete: token.extra_fields().athlete.clone(),
     }
 }
 
@@ -314,6 +324,27 @@ pub enum FetchError {
     Other(String),
 }
 
+#[derive(Debug)]
+pub enum FetchEpoch {
+    Before(DateTime<Utc>),
+    After(DateTime<Utc>),
+    All,
+}
+
+/// Return whether there is any activities after the given datetime.
+pub async fn any_newer_activities(
+    access_token: &str,
+    after_epoch: DateTime<Utc>,
+) -> Result<bool, FetchError> {
+    let url = format!(
+        "{ACTIVITIES_URL}?after={}&per_page=1",
+        after_epoch.timestamp()
+    );
+    get_strava_api::<Vec<SummaryActivity>>(&url, access_token, "activities")
+        .await
+        .map(|activities| !activities.is_empty())
+}
+
 /// Fetch the most recent activities for the authenticated athlete.
 ///
 /// before_epoch: An epoch timestamp to use for filtering activities that have taken place before a certain time.
@@ -321,11 +352,16 @@ pub enum FetchError {
 /// https://developers.strava.com/docs/reference/#api-Activities-getLoggedInAthleteActivities
 pub async fn fetch_activities(
     access_token: &str,
-    before_epoch: Option<DateTime<Utc>>,
+    epoch: &FetchEpoch,
 ) -> Result<Vec<SummaryActivity>, FetchError> {
-    let url = match before_epoch {
-        Some(before_epoch) => format!("{ACTIVITIES_URL}?before={}", before_epoch.timestamp()),
-        None => ACTIVITIES_URL.to_string(),
+    let url = match epoch {
+        FetchEpoch::Before(before_epoch) => {
+            format!("{ACTIVITIES_URL}?before={}", before_epoch.timestamp())
+        }
+        FetchEpoch::After(after_epoch) => {
+            format!("{ACTIVITIES_URL}?after={}", after_epoch.timestamp())
+        }
+        FetchEpoch::All => ACTIVITIES_URL.to_string(),
     };
 
     get_strava_api(&url, access_token, "activities").await
