@@ -157,7 +157,7 @@ async fn fetch_older_runs(
                     name: Set(activity.name.clone()),
                     distance: Set(activity.distance as i64),
                     moving_time: Set(activity.moving_time),
-                    start_date: Set(activity.start_date.into()),
+                    start_datetime: Set(activity.start_date.into()),
                     summary_map: Set(activity.map.summary_polyline.clone()),
                     is_first_run: Set(false), // this will updated afterwards.
                 }
@@ -236,7 +236,7 @@ async fn fetch_newer_runs(
                     name: Set(activity.name.clone()),
                     distance: Set(activity.distance as i64),
                     moving_time: Set(activity.moving_time),
-                    start_date: Set(activity.start_date.into()),
+                    start_datetime: Set(activity.start_date.into()),
                     summary_map: Set(activity.map.summary_polyline.clone()),
                     is_first_run: Set(false), // this will updated afterwards.
                 }
@@ -266,7 +266,7 @@ async fn find_oldest_downloaded_run(
     athlete_id: i64,
 ) -> Option<models::run::Model> {
     find_runs(athlete_id)
-        .order_by_asc(models::run::COLUMN.start_date)
+        .order_by_asc(models::run::COLUMN.start_datetime)
         .one(database)
         .await
         .unwrap()
@@ -291,10 +291,10 @@ async fn maybe_start_filling_runs(
             .expect("backfill set mutex poisoned")
             .insert(athlete_id);
     if should_backfill {
-        let before_epoch = oldest_downloaded_run.map(|run| *run.start_date);
+        let before_epoch = oldest_downloaded_run.map(|run| *run.start_datetime);
         let guard = FillAthleteGuard {
             athletes: state.backfilling_athletes.clone(),
-            athlete_id: athlete_id,
+            athlete_id,
         };
         tokio::spawn(async move {
             let _guard = guard;
@@ -319,12 +319,12 @@ async fn maybe_start_filling_runs(
     let access_token = valid_access_token(&database, athlete_id).await.unwrap();
     // Similarly, only need to forwardfill if there isn't an existing one in-flight.
     let after_epoch = *find_runs(athlete_id)
-        .order_by_desc(models::run::COLUMN.start_date)
+        .order_by_desc(models::run::COLUMN.start_datetime)
         .one(&database)
         .await
         .unwrap()
         .expect("there is an oldest_downloaded_run")
-        .start_date;
+        .start_datetime;
     tracing::info!("peeking after_epoch {:?}", after_epoch);
     // This needs to check for any newer activities otherwise this always forwardfill and never complete.
     if !services::strava::any_newer_activities(&access_token, after_epoch)
@@ -348,7 +348,7 @@ async fn maybe_start_filling_runs(
     tracing::info!("Starting forwardfill.");
     let guard = FillAthleteGuard {
         athletes: state.forwardfilling_athletes.clone(),
-        athlete_id: athlete_id,
+        athlete_id,
     };
     tokio::spawn(async move {
         let _guard = guard;
@@ -377,12 +377,12 @@ pub async fn get_runs(
         .expect("forwardfill set mutex poisoned")
         .contains(&athlete.athlete_id)
     {
-        tracing::error!("forwardfilling in progress according to lock");
+        tracing::info!("Returning NO_CONTENT as forwardfilling in progress.");
         return StatusCode::NO_CONTENT.into_response();
     }
 
     let mut athlete_runs =
-        find_runs(athlete.athlete_id).order_by_desc(models::run::COLUMN.start_date);
+        find_runs(athlete.athlete_id).order_by_desc(models::run::COLUMN.start_datetime);
 
     // The oldest downloaded run tells us whether the full history has been
     // backfilled: its `is_first_run` flag is only set once Strava has returned
@@ -398,7 +398,7 @@ pub async fn get_runs(
 
     match params.before {
         Some(before_epoch) => {
-            athlete_runs = athlete_runs.filter(models::run::COLUMN.start_date.lt(before_epoch))
+            athlete_runs = athlete_runs.filter(models::run::COLUMN.start_datetime.lt(before_epoch))
         }
         None => {
             if maybe_start_filling_runs(
@@ -435,7 +435,7 @@ pub async fn get_runs(
                         name: run.name.clone(),
                         distance: run.distance,
                         moving_time: run.moving_time,
-                        start_date: *run.start_date,
+                        start_datetime: *run.start_datetime,
                         summary_map,
                     })
                 })

@@ -135,7 +135,7 @@ fn get_properties(run: &RunResponse) -> serde_json::Map<String, serde_json::Valu
     // - Don't assume the run is in NZ. Use the timezone that corresponds to the start coordinate.
     let nz_tz: Tz = "Pacific/Auckland".parse().unwrap();
     let formatted_time = run
-        .start_date
+        .start_datetime
         .with_timezone(&nz_tz)
         .format("%A, %d %b %Y at %l:%M%P")
         .to_string();
@@ -177,7 +177,7 @@ pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns,
     let load_state = match complete_download {
         CompleteDownload::No => {
             let next_before = match runs.last() {
-                Some(last_run) => Some(last_run.start_date),
+                Some(last_run) => Some(last_run.start_datetime),
                 None => before,
             };
             LoadState::Continue(next_before)

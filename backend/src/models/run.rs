@@ -14,8 +14,8 @@ pub struct Model {
     pub distance: i64,
     /// The activity's moving time, in seconds.
     pub moving_time: i64,
-    /// The time at which the activity was started.
-    pub start_date: ChronoUnixTimestamp,
+    /// The datetime at which the activity was started.
+    pub start_datetime: ChronoUnixTimestamp,
     /// The summary map returned from Strava, as a Google Encoded Polyline.
     pub summary_map: Option<String>,
     /// Whether this activity is the first run for this athlete.
