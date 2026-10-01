@@ -85,13 +85,13 @@ pub fn use_auth() -> Auth {
             move |&is_logged_in| {
                 if is_logged_in {
                     wasm_bindgen_futures::spawn_local(async move {
-                        match crate::strava::load_profile().await {
+                        match crate::runs_client::load_profile().await {
                             Ok(athlete) => profile.set(Some(Profile {
                                 username: AttrValue::from(athlete.username),
                                 img_url: AttrValue::from(athlete.profile_url),
                             })),
-                            Err(crate::strava::LoadError::Unauthorized) => logged_in.set(false),
-                            Err(crate::strava::LoadError::Other(err)) => {
+                            Err(crate::runs_client::LoadError::Unauthorized) => logged_in.set(false),
+                            Err(crate::runs_client::LoadError::Other(err)) => {
                                 log::error!("Failed to load profile URL: {err}")
                             }
                         }

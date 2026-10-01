@@ -2,7 +2,7 @@ mod components;
 mod map;
 mod road_grid;
 mod session;
-mod strava;
+mod runs_client;
 use components::grid_toggle::GridToggle;
 use components::login_button::LoginButton;
 use yew::prelude::*;
