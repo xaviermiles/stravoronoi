@@ -16,7 +16,7 @@ use oauth2::url::Url;
 use oauth2::{
     AuthType, AuthUrl, AuthorizationCode, Client, ClientId, ClientSecret, CsrfToken,
     EndpointNotSet, EndpointSet, ErrorResponse, ExtraTokenFields, RedirectUrl, RefreshToken,
-    RequestTokenError, Scope, StandardRevocableToken, StandardTokenResponse, TokenResponse as _,
+    RequestTokenError, Scope, StandardRevocableToken, StandardTokenResponse, TokenResponse,
     TokenUrl,
 };
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
@@ -34,7 +34,9 @@ const ACTIVITIES_URL: &str = "https://www.strava.com/api/v3/athlete/activities";
 /// standard OAuth fields. We only model the `athlete` object here.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct StravaExtraFields {
-    athlete: StravaAthlete,
+    /// Only present on the code exchange response, not on refresh.
+    #[serde(default)]
+    athlete: Option<StravaAthlete>,
 }
 
 impl ExtraTokenFields for StravaExtraFields {}
@@ -58,18 +60,21 @@ type StravaClient<HasAuthUrl = EndpointNotSet, HasTokenUrl = EndpointNotSet> = C
     HasTokenUrl,
 >;
 
-/// The athlete Strava returns inside the OAuth token response.
+/// The athlete Strava returns inside the OAuth token exchange response.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StravaAthlete {
     pub id: i64,
 }
-/// The subset of Strava's token response that we care about.
+/// Response parameters of Strava's token responses.
+///
+/// For both:
+/// - https://developers.strava.com/docs/authentication/#tokenexchange
+/// - https://developers.strava.com/docs/authentication/#refreshingexpiredaccesstokens
 pub struct StravaTokens {
     pub access_token: String,
     pub refresh_token: String,
     /// Unix timestamp (seconds) at which `access_token` expires.
     pub expires_at: i64,
-    pub athlete: StravaAthlete,
 }
 
 /// Build a Strava OAuth client from environment configuration.
@@ -111,13 +116,19 @@ pub fn authorize_url() -> (Url, CsrfToken) {
 
 /// Exchange an authorization `code` (from the OAuth callback) for a new user's
 /// tokens. The only place the client secret is used for a brand-new user.
-pub async fn exchange_code(code: &str) -> Result<StravaTokens, String> {
+pub async fn exchange_code(code: &str) -> Result<(StravaTokens, i64), String> {
     let token = oauth_client()
         .exchange_code(AuthorizationCode::new(code.to_string()))
         .request_async(&http_client())
         .await
         .map_err(|e| format!("code exchange failed: {}", format_token_error(e)))?;
-    Ok(into_tokens(&token))
+    let athlete_id = token
+        .extra_fields()
+        .athlete
+        .as_ref()
+        .ok_or("code exchange failed: response missing athlete")?
+        .id;
+    Ok((into_tokens(&token), athlete_id))
 }
 
 /// Refresh one user's expired access token using their stored refresh token.
@@ -165,7 +176,6 @@ fn into_tokens(token: &StravaTokenResponse) -> StravaTokens {
             .map(|t| t.secret().to_string())
             .unwrap_or_default(),
         expires_at,
-        athlete: token.extra_fields().athlete.clone(),
     }
 }
 
