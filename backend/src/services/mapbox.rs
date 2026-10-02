@@ -1,9 +1,11 @@
 /// Map matching using the mapbox Map Matching API.
 ///
 /// https://docs.mapbox.com/api/navigation/map-matching/
+use axum::http::StatusCode;
 use geo_types::geometry::Coord;
 use geojson::Value;
 use serde::{self, Deserialize};
+use std::time::Duration;
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 // The /driving endpoint only includes roads, while /walking matches to paths if they are closer.
@@ -14,8 +16,10 @@ const MAX_MATCH_COORDS: usize = 100;
 pub enum MatchError {
     /// An error that is consistently reproducible with the same data.
     Permanent(String),
-    /// An error that should be recoverable.
+    /// An error that should be recoverable immediately.
     Transient(String),
+    /// An error that should be recoverable after waiting.
+    Backoff(Duration),
 }
 
 #[derive(Deserialize)]
@@ -65,7 +69,11 @@ async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, MatchError>
     let matched: MatchResponse = resp.json().await.map_err(|err| {
         MatchError::Transient(format!("Failed to parse matching response: {err}"))
     })?;
-    if status != 200 {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        // The rate limit is "300 requests per minute" so waiting 1 minute should fix this.
+        // https://docs.mapbox.com/api/guides/#rate-limits
+        return Err(MatchError::Backoff(Duration::from_mins(1)));
+    } else if status != StatusCode::OK {
         return Err(MatchError::Permanent(format!(
             "Matching code: {}, message: {}",
             matched.code, matched.message

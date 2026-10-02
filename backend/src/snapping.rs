@@ -3,6 +3,7 @@ use sea_orm::QueryOrder;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::sync::Arc;
 use tokio::sync::Notify;
+use tokio::time;
 
 use crate::models::{run, snapped_run};
 use sea_orm::ActiveValue::Set;
@@ -62,6 +63,10 @@ async fn process_run(database: &DatabaseConnection, run: models::run::Model) -> 
             return insert_snapped_run(database, run.strava_activity_id, None).await;
         }
         Err(MatchError::Transient(err)) => return Err(format!("Transient: {err}")),
+        Err(MatchError::Backoff(backoff_time)) => {
+            time::sleep(backoff_time).await;
+            return Err(format!("Backed off for {backoff_time:?}"));
+        }
     };
 
     match polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION) {

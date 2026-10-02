@@ -90,7 +90,9 @@ pub fn use_auth() -> Auth {
                                 username: AttrValue::from(athlete.username),
                                 img_url: AttrValue::from(athlete.profile_url),
                             })),
-                            Err(crate::runs_client::LoadError::Unauthorized) => logged_in.set(false),
+                            Err(crate::runs_client::LoadError::Unauthorized) => {
+                                logged_in.set(false)
+                            }
                             Err(crate::runs_client::LoadError::Other(err)) => {
                                 log::error!("Failed to load profile URL: {err}")
                             }

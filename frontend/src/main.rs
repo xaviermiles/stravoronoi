@@ -1,8 +1,8 @@
 mod components;
 mod map;
 mod road_grid;
-mod session;
 mod runs_client;
+mod session;
 use components::grid_toggle::GridToggle;
 use components::login_button::LoginButton;
 use yew::prelude::*;
