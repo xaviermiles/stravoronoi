@@ -1,3 +1,6 @@
+/// Map matching using the mapbox Map Matching API.
+///
+/// https://docs.mapbox.com/api/navigation/map-matching/
 use geo_types::geometry::Coord;
 use geojson::Value;
 use serde::{self, Deserialize};
@@ -8,12 +11,24 @@ const MATCHING_URL: &str = "https://api.mapbox.com/matching/v5/mapbox/walking";
 /// Mapbox Map Matching accepts at most 100 coordinates per request.
 const MAX_MATCH_COORDS: usize = 100;
 
+pub enum MatchError {
+    /// An error that is consistently reproducible with the same data.
+    Permanent(String),
+    /// An error that should be recoverable.
+    Transient(String),
+}
+
 #[derive(Deserialize)]
 struct MatchResponse {
     #[serde(default)]
     code: String,
     #[serde(default)]
     matchings: Vec<Matching>,
+    /// Human-readable explanation of the error.
+    ///
+    /// Will only be present on responses with HTTP status codes that are errors (!= 200) and lower than 500.
+    #[serde(default)]
+    message: String,
 }
 
 #[derive(Deserialize)]
@@ -29,7 +44,7 @@ fn as_line(geom: &geojson::Geometry) -> Vec<Vec<f64>> {
 }
 
 /// Snap up to 100 points to the road/path network.
-async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, String> {
+async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, MatchError> {
     let path = coords
         .iter()
         .map(|coord: &Coord<f64>| format!("{},{}", coord.x, coord.y)) // lng,lat
@@ -45,13 +60,16 @@ async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, String> {
 
     let resp = reqwest::get(&url)
         .await
-        .map_err(|e| format!("Map matching failed: {e}"))?;
-    let matched: MatchResponse = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse matching response: {e}"))?;
-    if matched.code != "Ok" {
-        return Err(format!("Matching code: {}", matched.code));
+        .map_err(|err| MatchError::Transient(format!("Map matching failed: {err}")))?;
+    let status = resp.status();
+    let matched: MatchResponse = resp.json().await.map_err(|err| {
+        MatchError::Transient(format!("Failed to parse matching response: {err}"))
+    })?;
+    if status != 200 {
+        return Err(MatchError::Permanent(format!(
+            "Matching code: {}, message: {}",
+            matched.code, matched.message
+        )));
     }
     Ok(matched
         .matchings
@@ -62,21 +80,20 @@ async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, String> {
 }
 
 /// Map-match a full run, splitting into overlapping 100-point chunks.
-pub async fn map_match(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
+pub async fn map_match(coords: &[Coord<f64>]) -> Result<Vec<Coord<f64>>, MatchError> {
+    if coords.len() < 2 {
+        return Err(MatchError::Permanent(
+            "Less than 2 points means it isn't a line.".into(),
+        ));
+    }
+
     let mut out: Vec<Coord<f64>> = Vec::new();
-    let mut start = 0;
+    let mut start: usize = 0;
     while start < coords.len() - 1 {
         let end = (start + MAX_MATCH_COORDS).min(coords.len());
         let chunk = &coords[start..end];
 
-        let mut seg = match match_chunk(chunk).await {
-            Ok(s) => s,
-            Err(e) => {
-                // TODO: is this fallback useful?
-                tracing::warn!("chunk match failed ({e}); using raw points");
-                chunk.iter().map(|coord| vec![coord.x, coord.y]).collect()
-            }
-        };
+        let mut seg = match_chunk(chunk).await?;
         // Chunks overlap by one input point; drop the seam vertex to reduce duplication.
         if !out.is_empty() && !seg.is_empty() {
             seg.remove(0);
@@ -88,5 +105,5 @@ pub async fn map_match(coords: &[Coord<f64>]) -> Vec<Coord<f64>> {
         }
         start = end - 1; // overlap for continuity
     }
-    out
+    Ok(out)
 }

@@ -16,6 +16,7 @@ use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
 use crate::services::strava::{FetchEpoch, FetchError, SummaryActivity};
+use crate::services::mapbox::MatchError;
 use crate::session::AuthedAthlete;
 use crate::{AppState, FillAthleteSet, models, services};
 
@@ -53,13 +54,11 @@ async fn snap_line(encoded_coords: &str) -> Result<String, String> {
         .map_err(|err| format!("Failed to decoded polyline {err}"))?
         .into_inner();
 
-    if raw_coords.len() < 2 {
-        return Err("Less than 2 points means it isn't a line.".into());
-    }
-    let snapped_coords = services::mapbox::map_match(&raw_coords).await;
-    if snapped_coords.len() < 2 {
-        return Err("Less than 2 points means it isn't a line.".into());
-    }
+    let snapped_coords = match services::mapbox::map_match(&raw_coords).await {
+        Ok(polyline) => polyline,
+        Err(MatchError::Permanent(err)) => return Err(format!("Permanent: {err}")),
+        Err(MatchError::Transient(err)) => return Err(format!("Transient: {err}")),
+    };
 
     polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION)
         .map_err(|err| format!("Failed to encode polyline: {err}"))
