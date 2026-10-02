@@ -4,7 +4,7 @@ use sea_orm::entity::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "run")]
 pub struct Model {
-    #[sea_orm(primary_key)]
+    #[sea_orm(primary_key, auto_increment = false)]
     pub strava_activity_id: i64,
     /// Strava athelete ID.
     pub athlete_id: i64,
@@ -20,6 +20,8 @@ pub struct Model {
     pub summary_map: Option<String>,
     /// Whether this activity is the first run for this athlete.
     pub is_first_run: bool,
+    #[sea_orm(has_one)]
+    pub snapped_run: HasOne<super::snapped_run::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

@@ -99,6 +99,7 @@ async fn insert_activities(
                 start_datetime: Set(activity.start_date.into()),
                 summary_map: Set(activity.map.summary_polyline.clone()),
                 is_first_run: Set(false), // this will updated afterwards.
+                ..Default::default()
             }
         })
         .collect();
