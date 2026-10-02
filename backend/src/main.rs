@@ -85,6 +85,7 @@ async fn init_app_state(clean_database: bool) -> AppState {
         }
     });
 
+    // TODO: add notifications when more runs are inserted in the database.
     snapping::start(state.database.clone(), state.snap_notify.clone());
     // Process runs already in the database.
     state.snap_notify.clone().notify_one();
