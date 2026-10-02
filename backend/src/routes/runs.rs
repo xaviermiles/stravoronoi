@@ -16,12 +16,8 @@ use serde::Deserialize;
 use tokio::time::{Duration, sleep};
 
 use crate::services::strava::{FetchEpoch, FetchError, SummaryActivity};
-use crate::services::mapbox::MatchError;
 use crate::session::AuthedAthlete;
 use crate::{AppState, FillAthleteSet, models, services};
-
-/// Strava encoded polylines use a precision of 5 decimal places.
-const POLYLINE_PRECISION: u32 = 5;
 
 // This will retry 5 times. This backoff usually won't work since the rate limits are per 15
 // minutes and per 1 day, but it doesn't hurt since we will wait between requests anyway.
@@ -43,25 +39,6 @@ impl Drop for FillAthleteGuard {
             athletes.remove(&self.athlete_id);
         }
     }
-}
-
-// TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
-//       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
-/// Snap a Strava encoded polyline using map matching.
-#[allow(dead_code)]
-async fn snap_line(encoded_coords: &str) -> Result<String, String> {
-    let raw_coords = polyline::decode_polyline(encoded_coords, POLYLINE_PRECISION)
-        .map_err(|err| format!("Failed to decoded polyline {err}"))?
-        .into_inner();
-
-    let snapped_coords = match services::mapbox::map_match(&raw_coords).await {
-        Ok(polyline) => polyline,
-        Err(MatchError::Permanent(err)) => return Err(format!("Permanent: {err}")),
-        Err(MatchError::Transient(err)) => return Err(format!("Transient: {err}")),
-    };
-
-    polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION)
-        .map_err(|err| format!("Failed to encode polyline: {err}"))
 }
 
 /// Return a currently-valid Strava access token for `athlete_id`.

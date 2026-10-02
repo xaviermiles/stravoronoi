@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -20,6 +21,7 @@ mod road_grid;
 mod routes;
 mod services;
 mod session;
+mod snapping;
 
 const FRONTEND_URL: &str = if cfg!(debug_assertions) {
     "http://localhost:8080"
@@ -53,6 +55,8 @@ struct AppState {
     /// only paginates backwards in time, so it needs to wait for the most recent run
     /// before it can start paginating without losing any data.
     forwardfilling_athletes: FillAthleteSet,
+    /// Channel for notifying that there is new runs to be snapped.
+    snap_notify: Arc<Notify>,
 }
 
 async fn init_app_state(clean_database: bool) -> AppState {
@@ -63,11 +67,13 @@ async fn init_app_state(clean_database: bool) -> AppState {
         .await
         .expect("need a database connection");
     let is_grid_ready = Arc::new(AtomicBool::new(false));
+    // let snap_notify = Arc::new(Notify::new());
     let state = AppState {
         database,
         is_grid_ready: is_grid_ready.clone(),
         backfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
         forwardfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
+        snap_notify: Arc::new(Notify::new()),
     };
 
     // Seed the road grid without blocking.
@@ -78,6 +84,11 @@ async fn init_app_state(clean_database: bool) -> AppState {
             Err(err) => tracing::error!("Failed to seed road grid: {err}"),
         }
     });
+
+    snapping::start(state.database.clone(), state.snap_notify.clone());
+    // Process runs already in the database.
+    state.snap_notify.clone().notify_one();
+
     state
 }
 
