@@ -99,7 +99,6 @@ async fn insert_activities(
                 start_datetime: Set(activity.start_date.into()),
                 summary_map: Set(activity.map.summary_polyline.clone()),
                 is_first_run: Set(false), // this will updated afterwards.
-                ..Default::default()
             }
         })
         .collect();
@@ -342,8 +341,11 @@ pub async fn get_runs(
         return StatusCode::NO_CONTENT.into_response();
     }
 
-    let mut athlete_runs =
-        find_runs(athlete.athlete_id).order_by_desc(models::run::COLUMN.start_datetime);
+    // Runs that couldn't be snapped have a NULL polyline and are excluded.
+    let mut athlete_runs = find_runs(athlete.athlete_id)
+        .find_also_related(models::snapped_run::Entity)
+        .filter(models::snapped_run::COLUMN.polyline.is_not_null())
+        .order_by_desc(models::run::COLUMN.start_datetime);
 
     // The oldest downloaded run tells us whether the full history has been
     // backfilled: its `is_first_run` flag is only set once Strava has returned
@@ -383,22 +385,24 @@ pub async fn get_runs(
                 } else {
                     StatusCode::NO_CONTENT
                 }
-            } else if runs[runs.len() - 1].is_first_run {
+            } else if runs[runs.len() - 1].0.is_first_run {
                 StatusCode::OK
             } else {
                 StatusCode::PARTIAL_CONTENT
             };
             let runs_response: Vec<_> = runs
                 .into_iter()
-                .filter_map(|run| {
-                    run.summary_map.map(|summary_map| RunResponse {
-                        strava_activity_id: run.strava_activity_id,
-                        name: run.name.clone(),
-                        distance: run.distance,
-                        moving_time: run.moving_time,
-                        start_datetime: *run.start_datetime,
-                        summary_map,
-                    })
+                .filter_map(|(run, snapped_run)| {
+                    snapped_run
+                        .and_then(|snapped| snapped.polyline)
+                        .map(|polyline| RunResponse {
+                            strava_activity_id: run.strava_activity_id,
+                            name: run.name,
+                            distance: run.distance,
+                            moving_time: run.moving_time,
+                            start_datetime: *run.start_datetime,
+                            summary_map: polyline,
+                        })
                 })
                 .collect();
             (status_code, Json(runs_response)).into_response()
