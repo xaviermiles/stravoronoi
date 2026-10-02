@@ -3,13 +3,13 @@
 /// https://docs.mapbox.com/api/navigation/map-matching/
 use axum::http::StatusCode;
 use geo_types::geometry::Coord;
-use geojson::Value;
+use geojson::{LineStringType, Value};
 use serde::{self, Deserialize};
 use std::time::Duration;
 
 const MAPBOX_TOKEN: &str = env!("MAPBOX_TOKEN");
 // The /driving endpoint only includes roads, while /walking matches to paths if they are closer.
-const MATCHING_URL: &str = "https://api.mapbox.com/matching/v5/mapbox/walking";
+const MATCHING_URL: &str = "https://api.mapbox.com/matching/v5/mapbox/driving";
 /// Mapbox Map Matching accepts at most 100 coordinates per request.
 const MAX_MATCH_COORDS: usize = 100;
 
@@ -22,6 +22,7 @@ pub enum MatchError {
     Backoff(Duration),
 }
 
+/// https://docs.mapbox.com/api/navigation/map-matching/#response-retrieve-a-match
 #[derive(Deserialize)]
 struct MatchResponse {
     #[serde(default)]
@@ -35,12 +36,13 @@ struct MatchResponse {
     message: String,
 }
 
+/// https://docs.mapbox.com/api/navigation/map-matching/#match-object
 #[derive(Deserialize)]
 struct Matching {
     geometry: geojson::Geometry, // geometries=geojson => a LineString
 }
 
-fn as_line(geom: &geojson::Geometry) -> Vec<Vec<f64>> {
+fn as_line(geom: &geojson::Geometry) -> LineStringType {
     match &geom.value {
         Value::LineString(coords) => coords.clone(),
         _ => Vec::new(),
@@ -48,7 +50,9 @@ fn as_line(geom: &geojson::Geometry) -> Vec<Vec<f64>> {
 }
 
 /// Snap up to 100 points to the road/path network.
-async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, MatchError> {
+///
+/// This is because the API requires each request to be 100 points or less.
+async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<LineStringType>, MatchError> {
     let path = coords
         .iter()
         .map(|coord: &Coord<f64>| format!("{},{}", coord.x, coord.y)) // lng,lat
@@ -58,7 +62,7 @@ async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, MatchError>
     let radiuses = vec!["25"; coords.len()].join(";");
 
     let url = format!(
-        "{MATCHING_URL}/{path}?geometries=geojson&overview=full&tidy=true\
+        "{MATCHING_URL}/{path}?geometries=geojson&overview=simplified&tidy=true\
          &radiuses={radiuses}&access_token={MAPBOX_TOKEN}"
     );
 
@@ -82,9 +86,8 @@ async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<Vec<f64>>, MatchError>
     Ok(matched
         .matchings
         .into_iter()
-        .next()
-        .map(|m| as_line(&m.geometry))
-        .unwrap_or_default())
+        .map(|matching| as_line(&matching.geometry))
+        .collect())
 }
 
 /// Map-match a full run, splitting into overlapping 100-point chunks.
@@ -101,12 +104,16 @@ pub async fn map_match(coords: &[Coord<f64>]) -> Result<Vec<Coord<f64>>, MatchEr
         let end = (start + MAX_MATCH_COORDS).min(coords.len());
         let chunk = &coords[start..end];
 
-        let mut seg = match_chunk(chunk).await?;
-        // Chunks overlap by one input point; drop the seam vertex to reduce duplication.
-        if !out.is_empty() && !seg.is_empty() {
-            seg.remove(0);
+        for mut seg in match_chunk(chunk).await? {
+            // Chunks overlap by one input point; drop the seam vertex to reduce duplication.
+            // TODO: check whether the segment is actually a duplicated vertex. It won't be duplicated
+            // if map matching leaves a gap, like when a run is too far away from a road. This will
+            // require them being stored in a format that supports multiple polylines per run.
+            if !out.is_empty() && !seg.is_empty() {
+                seg.remove(0);
+            }
+            out.extend(seg.into_iter().map(|p| Coord { x: p[0], y: p[1] }));
         }
-        out.extend(seg.into_iter().map(|p| Coord { x: p[0], y: p[1] }));
 
         if end == coords.len() {
             break;
