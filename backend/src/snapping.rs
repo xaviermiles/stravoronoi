@@ -1,4 +1,8 @@
 use crate::models;
+use geo::MultiLineString;
+use geojson::Feature;
+use geojson::Geometry;
+use geojson::Value;
 use sea_orm::QueryOrder;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::sync::Arc;
@@ -30,11 +34,18 @@ async fn get_next_unsnapped_run(database: &DatabaseConnection) -> Option<run::Mo
 async fn insert_snapped_run(
     database: &DatabaseConnection,
     strava_activity_id: i64,
-    polyline: Option<String>,
+    polyline: Option<MultiLineString>,
 ) -> Result<(), String> {
+    let geojson = polyline.map(|polyline| {
+        let feature = Feature {
+            geometry: Some(Geometry::new(Value::from(&polyline))),
+            ..Default::default()
+        };
+        feature.to_string()
+    });
     match snapped_run::Entity::insert(snapped_run::ActiveModel {
         strava_activity_id: Set(strava_activity_id),
-        polyline: Set(polyline),
+        polyline: Set(geojson),
         processed_time: Set(chrono::Utc::now().into()),
     })
     .exec(database)
@@ -56,29 +67,17 @@ async fn process_run(database: &DatabaseConnection, run: models::run::Model) -> 
         .map_err(|err| format!("Failed to decoded polyline {err}"))?
         .into_inner();
 
-    let snapped_coords = match map_match(&raw_coords).await {
-        Ok(polyline) => polyline,
+    match map_match(&raw_coords).await {
+        Ok(polyline) => insert_snapped_run(database, run.strava_activity_id, Some(polyline)).await,
         Err(MatchError::Permanent(err)) => {
             tracing::error!("Permanent error map matching: {err}");
-            return insert_snapped_run(database, run.strava_activity_id, None).await;
+            insert_snapped_run(database, run.strava_activity_id, None).await
         }
         Err(MatchError::Transient(err)) => return Err(format!("Transient: {err}")),
         Err(MatchError::Backoff(backoff_time)) => {
             time::sleep(backoff_time).await;
-            return Err(format!("Backed off for {backoff_time:?}"));
+            Err(format!("Backed off for {backoff_time:?}"))
         }
-    };
-
-    match polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION) {
-        Ok(encoded_snapped_coords) => {
-            insert_snapped_run(
-                database,
-                run.strava_activity_id,
-                Some(encoded_snapped_coords),
-            )
-            .await
-        }
-        Err(err) => Err(format!("Failed to encode polyline: {err}")),
     }
 }
 

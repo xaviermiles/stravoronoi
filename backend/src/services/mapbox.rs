@@ -2,6 +2,7 @@
 ///
 /// https://docs.mapbox.com/api/navigation/map-matching/
 use axum::http::StatusCode;
+use geo::{LineString, MultiLineString};
 use geo_types::geometry::Coord;
 use geojson::{LineStringType, Value};
 use serde::{self, Deserialize};
@@ -49,9 +50,7 @@ fn as_line(geom: &geojson::Geometry) -> LineStringType {
     }
 }
 
-/// Snap up to 100 points to the road/path network.
-///
-/// This is because the API requires each request to be 100 points or less.
+/// Snap coordinates to the road network.
 async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<LineStringType>, MatchError> {
     let path = coords
         .iter()
@@ -90,29 +89,38 @@ async fn match_chunk(coords: &[Coord<f64>]) -> Result<Vec<LineStringType>, Match
         .collect())
 }
 
-/// Map-match a full run, splitting into overlapping 100-point chunks.
-pub async fn map_match(coords: &[Coord<f64>]) -> Result<Vec<Coord<f64>>, MatchError> {
+/// Map-match a full run.
+pub async fn map_match(coords: &[Coord<f64>]) -> Result<MultiLineString, MatchError> {
     if coords.len() < 2 {
         return Err(MatchError::Permanent(
             "Less than 2 points means it isn't a line.".into(),
         ));
     }
 
-    let mut out: Vec<Coord<f64>> = Vec::new();
+    let mut polylines: Vec<LineString> = Vec::new();
+    let mut current_polyline: LineStringType = Vec::new();
     let mut start: usize = 0;
     while start < coords.len() - 1 {
         let end = (start + MAX_MATCH_COORDS).min(coords.len());
         let chunk = &coords[start..end];
 
-        for mut seg in match_chunk(chunk).await? {
-            // Chunks overlap by one input point; drop the seam vertex to reduce duplication.
-            // TODO: check whether the segment is actually a duplicated vertex. It won't be duplicated
-            // if map matching leaves a gap, like when a run is too far away from a road. This will
-            // require them being stored in a format that supports multiple polylines per run.
-            if !out.is_empty() && !seg.is_empty() {
-                seg.remove(0);
+        for seg in match_chunk(chunk).await? {
+            if let Some(last_current_polyline) = current_polyline.last()
+                && let Some(first_next_seg) = seg.first()
+                && last_current_polyline == first_next_seg
+            {
+                // Chunks overlap by one input point; drop the seam vertex to reduce duplication.
+                current_polyline.extend(seg.into_iter().skip(1));
+            } else {
+                // The matched chunks are distinct, so finish the current polyline and start a new one.
+                polylines.push(LineString::new(
+                    current_polyline
+                        .iter()
+                        .map(|p| Coord { x: p[0], y: p[1] })
+                        .collect(),
+                ));
+                current_polyline = seg;
             }
-            out.extend(seg.into_iter().map(|p| Coord { x: p[0], y: p[1] }));
         }
 
         if end == coords.len() {
@@ -120,5 +128,5 @@ pub async fn map_match(coords: &[Coord<f64>]) -> Result<Vec<Coord<f64>>, MatchEr
         }
         start = end - 1; // overlap for continuity
     }
-    Ok(out)
+    Ok(MultiLineString::new(polylines))
 }
