@@ -1,4 +1,4 @@
-//! Minimal Strava API client for the browser (WASM).
+//! Client to load runs from the backend.
 //!
 //! Fetches the athlete's most recent runs and returns them as a GeoJSON `FeatureCollection` of `
 //! LineString`s ready to hand to Mapbox.
@@ -12,7 +12,7 @@ use gloo_net::http::Request;
 use http::status::StatusCode;
 use serde::de::DeserializeOwned;
 
-/// Strava encoded polylines use a precision of 5 decimal places.
+/// Encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
 
 enum CompleteDownload {
@@ -22,7 +22,7 @@ enum CompleteDownload {
 
 #[derive(PartialEq)]
 pub enum LoadState {
-    /// Continue loading. Includes the next after_id.
+    /// Continue loading. Includes the next after-epoch.
     Continue(Option<DateTime<Utc>>),
     /// Finished loading.
     Finished,
@@ -30,7 +30,7 @@ pub enum LoadState {
 
 /// A batch of runs loaded from the backend.
 pub struct LoadedRuns {
-    /// Pairs of (strava activity ID, polyline feature).
+    /// Pairs of (run activity ID, polyline feature).
     pub features: Vec<(i64, Feature)>,
     /// Loaded state of the runs for this athlete.
     pub load_state: LoadState,
@@ -83,9 +83,6 @@ async fn fetch_json<T: DeserializeOwned>(
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
-///
-/// `after_id` pages through results: only runs with a `strava_activity_id`
-/// at or beyond it are returned by the backend.
 async fn fetch_runs(
     before: Option<DateTime<Utc>>,
 ) -> Result<(Vec<comms::runs::RunResponse>, CompleteDownload), LoadError> {
@@ -96,7 +93,7 @@ async fn fetch_runs(
     fetch_json(&url, "Activities").await
 }
 
-/// Decode a Strava encoded polyline into GeoJSON positions (`[lng, lat]`).
+/// Decode an encoded polyline into GeoJSON positions (`[lng, lat]`).
 ///
 /// The `polyline` crate returns `geo-types` coordinates in `(x = lng, y = lat)`
 /// order, which is exactly the order GeoJSON expects.

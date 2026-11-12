@@ -1,6 +1,6 @@
 use crate::components::grid_toggle::get_show_grid_storage_value;
 /// Create and draw on the mapboxgl map.
-use crate::strava::{self, LoadState};
+use crate::runs_client::{self, LoadState};
 use chrono::{DateTime, Utc};
 use geojson::{Feature, GeoJson};
 use mapboxgl::layer::{LineCap, LineJoin, LineLayer};
@@ -76,14 +76,14 @@ impl MapEventListener for Listener {
         wasm_bindgen_futures::spawn_local(async move {
             let mut before: Option<DateTime<Utc>> = None;
             loop {
-                let loaded_runs = match strava::load_run_lines(before).await {
+                let loaded_runs = match runs_client::load_run_lines(before).await {
                     Ok(loaded_runs) => loaded_runs,
-                    Err(strava::LoadError::Unauthorized) => {
+                    Err(runs_client::LoadError::Unauthorized) => {
                         log::info!("Session rejected: logging out.");
                         on_unauthorized.emit(());
                         break;
                     }
-                    Err(strava::LoadError::Other(e)) => {
+                    Err(runs_client::LoadError::Other(e)) => {
                         log::error!("Failed to load Strava runs: {e}");
                         break;
                     }
