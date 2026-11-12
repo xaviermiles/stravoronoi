@@ -311,12 +311,16 @@ async fn maybe_start_filling_runs(
         .start_datetime;
     tracing::info!("peeking after_epoch {:?}", after_epoch);
     // This needs to check for any newer activities otherwise this always forwardfill and never complete.
-    if !services::strava::any_newer_activities(&access_token, after_epoch)
-        .await
-        .unwrap()
-    {
-        tracing::info!("Skipping forwardfill as there is no newer activities.");
-        return false;
+    match services::strava::any_newer_activities(&access_token, after_epoch).await {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::info!("Skipping forwardfill as there is no newer activities.");
+            return false;
+        }
+        Err(err) => {
+            tracing::error!("Skipping forwardfill as checking for newer activities failed: {err:?}");
+            return false;
+        }
     }
 
     if !state
