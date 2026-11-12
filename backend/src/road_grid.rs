@@ -25,6 +25,17 @@ const INSERT_CHUNK: usize = 300;
 
 const SCALING_FACTOR: f64 = 10_000_000.;
 
+// Using hard-coded raw coordinates for Christchurch city for simplicity for now.
+// I might consider supporting multiple cities in the future.
+const MIN_CHC_COORDINATE: Coord = Coord {
+    x: 172.50,
+    y: -43.60,
+};
+const MAX_CHC_COORDINATE: Coord = Coord {
+    x: 172.75,
+    y: -43.45,
+};
+
 /// Create boostvoronoi point from coordinate.
 ///
 /// boostvoronoi only supports integer types so cast the f64 to i64.
@@ -404,16 +415,7 @@ async fn seed_voronoi(database: &DatabaseConnection) -> Result<(), String> {
 
     // The voronoi cells are unbounded and some cells spike off far into the distance. Crop by a
     // bounding box so they look more sensible.
-    let christchurch_bounding_box = get_bounding_box(
-        Coord {
-            x: 172.50,
-            y: -43.60,
-        },
-        Coord {
-            x: 172.75,
-            y: -43.45,
-        },
-    );
+    let christchurch_bounding_box = get_bounding_box(MIN_CHC_COORDINATE, MAX_CHC_COORDINATE);
     let polygons_database: Vec<_> = polygons
         .into_iter()
         .map(|(way_id, polygon_cells)| {
@@ -543,8 +545,8 @@ fn split_line_at_intersections(
 
 /// Fetch the Christchurch road network from Overpass and persist it as grid
 /// nodes and ordered way-node segments.
-async fn load(database: &DatabaseConnection) -> Result<(), String> {
-    let response = overpass::get_overpass_data().await?;
+async fn seed_road_grid(database: &DatabaseConnection) -> Result<(), String> {
+    let response = overpass::get_overpass_data(MIN_CHC_COORDINATE, MAX_CHC_COORDINATE).await?;
 
     let mut nodes = Vec::new();
     let mut nodes_by_id = HashMap::new();
@@ -738,8 +740,11 @@ async fn load(database: &DatabaseConnection) -> Result<(), String> {
     Ok(())
 }
 
+/// Seed the road grid and the voronoi cells derived from that grid.
+///
 /// Populate the road grid only when it is empty, so a cold database gets seeded
-/// while repeat startups are cheap no-ops.
+/// while repeat startups are cheap no-ops. Similarly, only generate the voronoi
+/// cells when it hasn't been done before.
 pub async fn seed(database: &DatabaseConnection) -> Result<(), String> {
     let existing_node_count = grid_node::Entity::find()
         .count(database)
@@ -748,9 +753,9 @@ pub async fn seed(database: &DatabaseConnection) -> Result<(), String> {
     if existing_node_count > 0 {
         tracing::info!("Skipping populating road grid as already filled.");
     } else {
-        load(database).await?;
+        seed_road_grid(database).await?;
     }
-    // TODO: should this be 2 separate seeding jobs?
+
     let existing_cell_count = grid_cell::Entity::find()
         .count(database)
         .await

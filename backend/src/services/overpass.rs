@@ -1,3 +1,4 @@
+use geo_types::Coord;
 /// Bindings to get nodes & ways from the Overpass API.
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -24,18 +25,27 @@ pub struct OverpassResponse {
 }
 
 /// Get all Christchurch ways and nodes from Overpass API.
-pub async fn get_overpass_data() -> Result<OverpassResponse, String> {
+pub async fn get_overpass_data(
+    min_coordinate: Coord,
+    max_coordinate: Coord,
+) -> Result<OverpassResponse, String> {
+    let coordinates = format!(
+        "{}, {}, {}, {}",
+        min_coordinate.y, min_coordinate.x, max_coordinate.y, max_coordinate.x
+    );
+    tracing::error!("{coordinates:?}");
     // Using all "road" types, from https://wiki.openstreetmap.org/wiki/Key:highway
     // + living_street (special road type)
-    // Using raw coordinates for Christchurch city for simplicity for now.
     // Needs a big timeout otherwise will get 504 error responses.
-    let query = r#"[out:json][timeout:500];
-    way[highway~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street)$"](-43.60, 172.50, -43.45, 172.75) -> .filtered_ways;
+    let query = format!(
+        r#"[out:json][timeout:500];
+    way[highway~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street)$"]({coordinates}) -> .filtered_ways;
     (
       .filtered_ways;
       node(w.filtered_ways);
     );
-    out body;"#;
+    out body;"#
+    );
 
     // Set up the HTTP client with a standard User-Agent header (required by Overpass)
     let client = reqwest::Client::builder()
