@@ -22,7 +22,7 @@ enum CompleteDownload {
 
 #[derive(PartialEq)]
 pub enum LoadState {
-    /// Continue loading. Includes the next after_id.
+    /// Continue loading. Includes the next after-epoch.
     Continue(Option<DateTime<Utc>>),
     /// Finished loading.
     Finished,
@@ -83,9 +83,6 @@ async fn fetch_json<T: DeserializeOwned>(
 }
 
 /// Fetch the most recent activities for the authenticated athlete.
-///
-/// `after_id` pages through results: only runs with a `strava_activity_id`
-/// at or beyond it are returned by the backend.
 async fn fetch_runs(
     before: Option<DateTime<Utc>>,
 ) -> Result<(Vec<comms::runs::RunResponse>, CompleteDownload), LoadError> {
