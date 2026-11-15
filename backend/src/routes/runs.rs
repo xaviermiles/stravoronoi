@@ -13,6 +13,8 @@ use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
 use sea_orm::{ActiveModelTrait, QueryOrder, Select};
 use serde::Deserialize;
+use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio::time::{Duration, sleep};
 
 use crate::services::strava::{FetchEpoch, FetchError, SummaryActivity};
@@ -144,6 +146,7 @@ async fn fetch_activity_pages(
     database: &DatabaseConnection,
     athlete_id: i64,
     mut cursor: FetchCursor,
+    snap_notify: Arc<Notify>,
 ) -> Result<(), String> {
     let access_token = valid_access_token(database, athlete_id).await?;
     tracing::info!("Start fetching runs for athlete_id={athlete_id:?} cursor={cursor:?}");
@@ -173,6 +176,7 @@ async fn fetch_activity_pages(
             break;
         };
         insert_activities(activities, athlete_id, database).await?;
+        snap_notify.notify_one();
         cursor = next_cursor;
         sleep(current_wait).await;
     }
@@ -187,8 +191,15 @@ async fn fetch_older_runs(
     database: &DatabaseConnection,
     athlete_id: i64,
     before_epoch: Option<DateTime<Utc>>,
+    snap_notify: Arc<Notify>,
 ) -> Result<(), String> {
-    fetch_activity_pages(database, athlete_id, FetchCursor::Older(before_epoch)).await?;
+    fetch_activity_pages(
+        database,
+        athlete_id,
+        FetchCursor::Older(before_epoch),
+        snap_notify,
+    )
+    .await?;
 
     // If the fetching above finished without returning an Err, then we know all the previous runs have been downloaded.
     // Update the final run in the database to know it is the final one.
@@ -212,8 +223,15 @@ async fn fetch_newer_runs(
     database: &DatabaseConnection,
     athlete_id: i64,
     after_epoch: DateTime<Utc>,
+    snap_notify: Arc<Notify>,
 ) -> Result<(), String> {
-    fetch_activity_pages(database, athlete_id, FetchCursor::Newer(after_epoch)).await?;
+    fetch_activity_pages(
+        database,
+        athlete_id,
+        FetchCursor::Newer(after_epoch),
+        snap_notify,
+    )
+    .await?;
     Ok(())
 }
 
@@ -260,12 +278,15 @@ async fn maybe_start_filling_runs(
             athletes: state.backfilling_athletes.clone(),
             athlete_id,
         };
+        let snap_notify = state.snap_notify.clone();
         tokio::spawn(async move {
             let _guard = guard;
             let database = models::connect_database()
                 .await
                 .expect("need a database connection");
-            if let Err(err) = fetch_older_runs(&database, athlete_id, before_epoch).await {
+            if let Err(err) =
+                fetch_older_runs(&database, athlete_id, before_epoch, snap_notify).await
+            {
                 tracing::error!("{err}");
             };
         });
@@ -320,9 +341,10 @@ async fn maybe_start_filling_runs(
         athletes: state.forwardfilling_athletes.clone(),
         athlete_id,
     };
+    let snap_notify = state.snap_notify.clone();
     tokio::spawn(async move {
         let _guard = guard;
-        if let Err(err) = fetch_newer_runs(&database, athlete_id, after_epoch).await {
+        if let Err(err) = fetch_newer_runs(&database, athlete_id, after_epoch, snap_notify).await {
             tracing::error!("{err}");
         }
     });
