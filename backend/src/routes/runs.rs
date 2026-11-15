@@ -13,19 +13,22 @@ use sea_orm::QueryFilter;
 use sea_orm::QuerySelect;
 use sea_orm::{ActiveModelTrait, QueryOrder, Select};
 use serde::Deserialize;
+use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio::time::{Duration, sleep};
 
 use crate::services::strava::{FetchEpoch, FetchError, SummaryActivity};
 use crate::session::AuthedAthlete;
 use crate::{AppState, FillAthleteSet, models, services};
 
-/// Strava encoded polylines use a precision of 5 decimal places.
-const POLYLINE_PRECISION: u32 = 5;
-
 // This will retry 5 times. This backoff usually won't work since the rate limits are per 15
 // minutes and per 1 day, but it doesn't hurt since we will wait between requests anyway.
 const START_WAIT: Duration = Duration::from_millis(100);
 const MAX_WAIT: Duration = Duration::from_secs(2);
+
+// If true, this endpoint will return snapped runs (to be mapped) instead of the original strava polylines.
+// This is useful for debugging.
+const SHOW_SNAPPED_RUNS: bool = false;
 
 /// Removes an athlete from the in-flight fill athlete set when dropped.
 ///
@@ -42,27 +45,6 @@ impl Drop for FillAthleteGuard {
             athletes.remove(&self.athlete_id);
         }
     }
-}
-
-// TODO: Currently it is mapping the snapped lines. I want the snapped lines to be primarily used for the voronoi calculations.
-//       They could be mapped in addition to the raw coordinates but they should be different colour and possibly more transparent.
-/// Snap a Strava encoded polyline using map matching.
-#[allow(dead_code)]
-async fn snap_line(encoded_coords: &str) -> Result<String, String> {
-    let raw_coords = polyline::decode_polyline(encoded_coords, POLYLINE_PRECISION)
-        .map_err(|err| format!("Failed to decoded polyline {err}"))?
-        .into_inner();
-
-    if raw_coords.len() < 2 {
-        return Err("Less than 2 points means it isn't a line.".into());
-    }
-    let snapped_coords = services::mapbox::map_match(&raw_coords).await;
-    if snapped_coords.len() < 2 {
-        return Err("Less than 2 points means it isn't a line.".into());
-    }
-
-    polyline::encode_coordinates(snapped_coords, POLYLINE_PRECISION)
-        .map_err(|err| format!("Failed to encode polyline: {err}"))
 }
 
 /// Return a currently-valid Strava access token for `athlete_id`.
@@ -164,6 +146,7 @@ async fn fetch_activity_pages(
     database: &DatabaseConnection,
     athlete_id: i64,
     mut cursor: FetchCursor,
+    snap_notify: Arc<Notify>,
 ) -> Result<(), String> {
     let access_token = valid_access_token(database, athlete_id).await?;
     tracing::info!("Start fetching runs for athlete_id={athlete_id:?} cursor={cursor:?}");
@@ -193,6 +176,7 @@ async fn fetch_activity_pages(
             break;
         };
         insert_activities(activities, athlete_id, database).await?;
+        snap_notify.notify_one();
         cursor = next_cursor;
         sleep(current_wait).await;
     }
@@ -207,8 +191,15 @@ async fn fetch_older_runs(
     database: &DatabaseConnection,
     athlete_id: i64,
     before_epoch: Option<DateTime<Utc>>,
+    snap_notify: Arc<Notify>,
 ) -> Result<(), String> {
-    fetch_activity_pages(database, athlete_id, FetchCursor::Older(before_epoch)).await?;
+    fetch_activity_pages(
+        database,
+        athlete_id,
+        FetchCursor::Older(before_epoch),
+        snap_notify,
+    )
+    .await?;
 
     // If the fetching above finished without returning an Err, then we know all the previous runs have been downloaded.
     // Update the final run in the database to know it is the final one.
@@ -232,8 +223,15 @@ async fn fetch_newer_runs(
     database: &DatabaseConnection,
     athlete_id: i64,
     after_epoch: DateTime<Utc>,
+    snap_notify: Arc<Notify>,
 ) -> Result<(), String> {
-    fetch_activity_pages(database, athlete_id, FetchCursor::Newer(after_epoch)).await?;
+    fetch_activity_pages(
+        database,
+        athlete_id,
+        FetchCursor::Newer(after_epoch),
+        snap_notify,
+    )
+    .await?;
     Ok(())
 }
 
@@ -280,12 +278,15 @@ async fn maybe_start_filling_runs(
             athletes: state.backfilling_athletes.clone(),
             athlete_id,
         };
+        let snap_notify = state.snap_notify.clone();
         tokio::spawn(async move {
             let _guard = guard;
             let database = models::connect_database()
                 .await
                 .expect("need a database connection");
-            if let Err(err) = fetch_older_runs(&database, athlete_id, before_epoch).await {
+            if let Err(err) =
+                fetch_older_runs(&database, athlete_id, before_epoch, snap_notify).await
+            {
                 tracing::error!("{err}");
             };
         });
@@ -318,7 +319,9 @@ async fn maybe_start_filling_runs(
             return false;
         }
         Err(err) => {
-            tracing::error!("Skipping forwardfill as checking for newer activities failed: {err:?}");
+            tracing::error!(
+                "Skipping forwardfill as checking for newer activities failed: {err:?}"
+            );
             return false;
         }
     }
@@ -338,9 +341,10 @@ async fn maybe_start_filling_runs(
         athletes: state.forwardfilling_athletes.clone(),
         athlete_id,
     };
+    let snap_notify = state.snap_notify.clone();
     tokio::spawn(async move {
         let _guard = guard;
-        if let Err(err) = fetch_newer_runs(&database, athlete_id, after_epoch).await {
+        if let Err(err) = fetch_newer_runs(&database, athlete_id, after_epoch, snap_notify).await {
             tracing::error!("{err}");
         }
     });
@@ -369,8 +373,11 @@ pub async fn get_runs(
         return StatusCode::NO_CONTENT.into_response();
     }
 
-    let mut athlete_runs =
-        find_runs(athlete.athlete_id).order_by_desc(models::run::COLUMN.start_datetime);
+    // Runs that couldn't be snapped have a NULL polyline and are excluded.
+    let mut athlete_runs = find_runs(athlete.athlete_id)
+        .find_also_related(models::snapped_run::Entity)
+        .filter(models::snapped_run::COLUMN.polyline.is_not_null())
+        .order_by_desc(models::run::COLUMN.start_datetime);
 
     // The oldest downloaded run tells us whether the full history has been
     // backfilled: its `is_first_run` flag is only set once Strava has returned
@@ -410,17 +417,22 @@ pub async fn get_runs(
                 } else {
                     StatusCode::NO_CONTENT
                 }
-            } else if runs[runs.len() - 1].is_first_run {
+            } else if runs[runs.len() - 1].0.is_first_run {
                 StatusCode::OK
             } else {
                 StatusCode::PARTIAL_CONTENT
             };
             let runs_response: Vec<_> = runs
                 .into_iter()
-                .filter_map(|run| {
-                    run.summary_map.map(|summary_map| RunResponse {
+                .filter_map(|(run, snapped_run)| {
+                    let summary_map = if SHOW_SNAPPED_RUNS {
+                        snapped_run.and_then(|snapped| snapped.polyline)
+                    } else {
+                        run.summary_map
+                    };
+                    summary_map.map(|summary_map| RunResponse {
                         strava_activity_id: run.strava_activity_id,
-                        name: run.name.clone(),
+                        name: run.name,
                         distance: run.distance,
                         moving_time: run.moving_time,
                         start_datetime: *run.start_datetime,

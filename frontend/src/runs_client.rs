@@ -97,10 +97,17 @@ async fn fetch_runs(
 ///
 /// The `polyline` crate returns `geo-types` coordinates in `(x = lng, y = lat)`
 /// order, which is exactly the order GeoJSON expects.
-fn decode_line(encoded: &str) -> Vec<Vec<f64>> {
+fn decode_line(encoded: &str) -> Option<Geometry> {
     match polyline::decode_polyline(encoded, POLYLINE_PRECISION) {
-        Ok(line) => line.coords().map(|c| vec![c.x, c.y]).collect(),
-        Err(_) => Vec::new(),
+        Ok(line) => {
+            let coords = line.coords().map(|c| vec![c.x, c.y]).collect();
+            Some(Geometry::new(Value::LineString(coords)))
+        }
+        Err(_) => {
+            // snapped_run stores as Feature rather than google-encoded polylines.
+            let feature = encoded.parse::<Feature>().unwrap();
+            feature.geometry
+        }
     }
 }
 
@@ -158,17 +165,19 @@ pub async fn load_run_lines(before: Option<DateTime<Utc>>) -> Result<LoadedRuns,
 
     let features = runs
         .iter()
-        .map(|run| {
-            let coords = decode_line(&run.summary_map);
+        .filter_map(|run| {
+            let Some(geometry) = decode_line(&run.summary_map) else {
+                return None;
+            };
 
             let run_line = Feature {
                 bbox: None,
-                geometry: Some(Geometry::new(Value::LineString(coords))),
+                geometry: Some(geometry),
                 id: None,
                 properties: Some(get_properties(run)),
                 foreign_members: None,
             };
-            (run.strava_activity_id, run_line)
+            Some((run.strava_activity_id, run_line))
         })
         .collect();
     let load_state = match complete_download {

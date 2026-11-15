@@ -84,7 +84,7 @@ impl MapEventListener for Listener {
                         break;
                     }
                     Err(runs_client::LoadError::Other(e)) => {
-                        log::error!("Failed to load Strava runs: {e}");
+                        log::error!("Failed to load runs: {e}");
                         break;
                     }
                 };
@@ -230,7 +230,7 @@ impl MapEventListener for RunClickListener {
             return;
         };
         let Some(serde_json::Value::String(popup_text)) = properties.get("popup_text") else {
-            // This shouldn't happen as strava::get_properties() always inserts this property.
+            // This shouldn't happen as runs_client::get_properties() always inserts this property.
             return;
         };
 

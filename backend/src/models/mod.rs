@@ -8,6 +8,7 @@ pub mod grid_cell;
 pub mod grid_node;
 pub mod grid_way;
 pub mod run;
+pub mod snapped_run;
 use std::fs;
 pub mod session;
 
