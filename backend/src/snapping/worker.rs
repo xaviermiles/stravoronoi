@@ -12,7 +12,7 @@ use crate::models::{run, snapped_run};
 use sea_orm::ActiveValue::Set;
 
 use super::segment_index::RoadSegmentIndex;
-use super::snapper::Snapper;
+use super::snapper;
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
@@ -72,12 +72,12 @@ async fn process_run(
         .into_inner();
 
     let index_guard = index.read().await;
-    let Some(idx) = index_guard.as_ref() else {
+    let Some(index) = index_guard.as_ref() else {
         // This will need to be processed again, but is a normal state so don't need to log an error.
         return Ok(());
     };
 
-    let snapped_polyline = Snapper::new(idx).snap_polyline(&raw_coords);
+    let snapped_polyline = snapper::snap_polyline(&raw_coords, &index);
     insert_snapped_run(database, run.strava_activity_id, snapped_polyline).await
 }
 

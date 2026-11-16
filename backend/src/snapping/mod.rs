@@ -1,4 +1,4 @@
-/// Handles snapping polylines to the road grid
+/// Handles snapping polylines to the road grid.
 mod segment_index;
 mod snapper;
 mod worker;
