@@ -1,7 +1,6 @@
-pub mod error;
-pub mod segment_index;
-pub mod snapper;
-/// Handles snapping polylines to the road grid.
+/// Handles snapping polylines to the road grid
+mod segment_index;
+mod snapper;
 mod worker;
 
 pub use segment_index::RoadSegmentIndex;

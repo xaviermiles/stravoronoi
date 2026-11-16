@@ -1,10 +1,9 @@
 /// Core snapping algorithm that matches run coordinates to road grid.
-use super::error::SnapError;
 use super::segment_index::RoadSegmentIndex;
 use geo::{Distance, Haversine, LineString, MultiLineString};
 use geo_types::{Coord, Point};
 
-const SNAP_RADIUS_M: f64 = 25.0;
+const SNAP_RADIUS_M: f64 = 30.0;
 /// Break the polyline only after this many consecutive out-of-range points.
 const MAX_CONSECUTIVE_OUTLIERS: usize = 5;
 /// Maximum plausible distance between consecutive snapped points (meters).
@@ -24,19 +23,23 @@ impl<'a> Snapper<'a> {
     /// Snap a polyline to the road grid.
     ///
     /// Returns a MultiLineString where each LineString represents a continuous
-    /// segment of the snapped path. Breaks occur only after multiple consecutive
-    /// points are too far from any road (true gaps).
-    pub fn snap_polyline(&self, coords: &[Coord<f64>]) -> Result<MultiLineString, SnapError> {
+    /// segment of the snapped path along a single road (way_id). Breaks occur when:
+    /// - Switching to a different way_id
+    /// - Multiple consecutive points are too far from any road (true gaps)
+    pub fn snap_polyline(&self, coords: &[Coord<f64>]) -> Option<MultiLineString> {
         if coords.len() < 2 {
-            return Err(SnapError::InsufficientPoints);
+            // Less than 2 points means it isn't a line.
+            return None;
         }
 
         if self.index.segments().is_empty() {
-            return Err(SnapError::NoRoadSegmentsLoaded);
+            // Road segment index is empty.
+            return None;
         }
 
         let mut polylines: Vec<LineString> = Vec::new();
         let mut current_line: Vec<Coord<f64>> = Vec::new();
+        let mut current_way_id: Option<i64> = None;
         let mut consecutive_outliers = 0;
 
         for coord in coords {
@@ -44,6 +47,19 @@ impl<'a> Snapper<'a> {
                 Some((segment, _distance)) => {
                     let (snapped_point, _, _) = segment.closest_point(*coord);
                     consecutive_outliers = 0;
+
+                    if let Some(prev_way_id) = current_way_id {
+                        if segment.way_id != prev_way_id {
+                            // Way changed - break the polyline
+                            polylines.push(LineString::new(current_line.clone()));
+                            current_line.clear();
+                            current_way_id = Some(segment.way_id);
+                            current_line.push(snapped_point);
+                            continue;
+                        }
+                    } else {
+                        current_way_id = Some(segment.way_id);
+                    }
 
                     // Check if this snapped point is suspiciously far from the previous one
                     if !current_line.is_empty() {
@@ -58,6 +74,7 @@ impl<'a> Snapper<'a> {
                             // Break the polyline here
                             polylines.push(LineString::new(current_line.clone()));
                             current_line.clear();
+                            current_way_id = Some(segment.way_id);
                         }
                     }
 
@@ -71,6 +88,7 @@ impl<'a> Snapper<'a> {
                     {
                         polylines.push(LineString::new(current_line.clone()));
                         current_line.clear();
+                        current_way_id = None;
                     }
                 }
             }
@@ -82,9 +100,10 @@ impl<'a> Snapper<'a> {
         }
 
         if polylines.is_empty() {
-            return Err(SnapError::AllPointsOutOfRange);
+            // All points are too far from any road segment.
+            return None;
         }
 
-        Ok(MultiLineString::new(polylines))
+        Some(MultiLineString::new(polylines))
     }
 }

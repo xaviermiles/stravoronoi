@@ -73,17 +73,12 @@ async fn process_run(
 
     let index_guard = index.read().await;
     let Some(idx) = index_guard.as_ref() else {
-        // This will need to be processed again, but is a normal state so don't need log an error.
+        // This will need to be processed again, but is a normal state so don't need to log an error.
         return Ok(());
     };
 
-    match Snapper::new(idx).snap_polyline(&raw_coords) {
-        Ok(polyline) => insert_snapped_run(database, run.strava_activity_id, Some(polyline)).await,
-        Err(err) => {
-            tracing::error!("Error snapping run {}: {}", run.strava_activity_id, err);
-            insert_snapped_run(database, run.strava_activity_id, None).await
-        }
-    }
+    let snapped_polyline = Snapper::new(idx).snap_polyline(&raw_coords);
+    insert_snapped_run(database, run.strava_activity_id, snapped_polyline).await
 }
 
 /// Spawn a worker to snap runs.
