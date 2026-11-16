@@ -1,3 +1,4 @@
+use crate::AppState;
 /// Imports and processes the road grid.
 use crate::models::{grid_cell, grid_node, grid_way};
 use crate::services::overpass::{self, OsmElement};
@@ -14,6 +15,7 @@ use sea_orm::QueryFilter;
 use sea_orm::prelude::Expr;
 use sea_orm::{ColumnTrait, DatabaseConnection, PaginatorTrait};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::Ordering;
 
 /// OSM coordinates are persisted as fixed-point integers scaled by 1e7 (E7),
 /// the same convention OpenStreetMap uses. This keeps full precision without
@@ -745,7 +747,7 @@ async fn seed_road_grid(database: &DatabaseConnection) -> Result<(), String> {
 /// Populate the road grid only when it is empty, so a cold database gets seeded
 /// while repeat startups are cheap no-ops. Similarly, only generate the voronoi
 /// cells when it hasn't been done before.
-pub async fn seed(database: &DatabaseConnection) -> Result<(), String> {
+async fn seed(database: &DatabaseConnection) -> Result<crate::snapping::RoadSegmentIndex, String> {
     let existing_node_count = grid_node::Entity::find()
         .count(database)
         .await
@@ -766,5 +768,25 @@ pub async fn seed(database: &DatabaseConnection) -> Result<(), String> {
         seed_voronoi(database).await?;
     }
 
-    Ok(())
+    // Build the snapping index from the seeded grid
+    crate::snapping::RoadSegmentIndex::from_database(database).await
+}
+
+/// Start seeding the road grid without blocking.
+pub fn start_seed(state: &AppState) {
+    let database = state.database.clone();
+    let is_grid_ready = state.is_grid_ready.clone();
+    let snap_notify = state.snap_notify.clone();
+    let snapping_index = state.snapping_index.clone();
+    tokio::spawn(async move {
+        match seed(&database).await {
+            Ok(index) => {
+                is_grid_ready.store(true, Ordering::Release);
+                let mut guard = snapping_index.write().await;
+                *guard = Some(index);
+                snap_notify.notify_one();
+            }
+            Err(err) => tracing::error!("Failed to seed road grid: {err}"),
+        }
+    });
 }
