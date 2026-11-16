@@ -1,10 +1,12 @@
-/// Spatial index for efficient nearest-neighbor queries on road segments.
+/// R-tree spatial index for efficient nearest-neighbor queries on road segments.
 use crate::models::grid_way;
 use geo::{Distance, Haversine, Point};
 use geo_types::Coord;
 use geojson::Value;
+use rstar::{AABB, RTree, RTreeObject};
 use sea_orm::EntityTrait;
-use std::collections::HashMap;
+
+const METERS_PER_DEGREE_LAT: f64 = 111_320.0;
 
 /// A single road segment (edge) in the network.
 #[derive(Clone, Debug)]
@@ -12,40 +14,54 @@ pub struct RoadSegment {
     pub way_id: i64,
     /// Consecutive vertices of this segment from the road network.
     pub vertices: Vec<Coord<f64>>,
+    envelope: AABB<[f64; 2]>,
+}
+
+impl RTreeObject for RoadSegment {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
 }
 
 impl RoadSegment {
+    fn new(way_id: i64, vertices: Vec<Coord<f64>>) -> Self {
+        let points: Vec<[f64; 2]> = vertices.iter().map(|v| [v.x, v.y]).collect();
+        let envelope = AABB::from_points(&points);
+        RoadSegment {
+            way_id,
+            vertices,
+            envelope,
+        }
+    }
+
     /// Find the closest point on this segment to the given coordinate.
-    /// Returns (closest_point, distance_in_meters, segment_parameter).
-    pub fn closest_point(&self, target: Coord<f64>) -> (Coord<f64>, f64, f64) {
+    /// Returns (closest_point, distance_in_meters).
+    pub fn closest_point(&self, target: Coord<f64>) -> (Coord<f64>, f64) {
         let mut min_dist = f64::INFINITY;
         let mut closest_point = self.vertices[0];
-        let mut closest_segment_parameter = 0.0;
 
         for i in 0..self.vertices.len() - 1 {
             let point0 = self.vertices[i];
             let point1 = self.vertices[i + 1];
 
-            let (point_on_segment, distance, segment_parameter) =
-                closest_point_on_segment(point0, point1, target);
+            let (point_on_segment, distance) = closest_point_on_segment(point0, point1, target);
 
             if distance < min_dist {
                 min_dist = distance;
                 closest_point = point_on_segment;
-                closest_segment_parameter = segment_parameter;
             }
         }
 
-        (closest_point, min_dist, closest_segment_parameter)
+        (closest_point, min_dist)
     }
 }
 
-/// Spatial index for road segments using grid-based partitioning.
+/// Spatial index for road segments. The R-tree narrows candidates by bounding box,
+/// then the exact distance is computed for each candidate.
 pub struct RoadSegmentIndex {
-    segments: Vec<RoadSegment>,
-    /// Grid-based spatial index: (grid_x, grid_y) -> segment indices
-    grid: HashMap<(i32, i32), Vec<usize>>,
-    grid_size: f64, // degrees
+    rtree: RTree<RoadSegment>,
 }
 
 impl RoadSegmentIndex {
@@ -78,97 +94,54 @@ impl RoadSegmentIndex {
                         .collect();
 
                     if vertices.len() >= 2 {
-                        segments.push(RoadSegment {
-                            way_id: way.way_id,
-                            vertices,
-                        });
+                        segments.push(RoadSegment::new(way.way_id, vertices));
                     }
                 }
             }
         }
 
-        let mut index = RoadSegmentIndex {
-            segments,
-            grid: HashMap::new(),
-            grid_size: 0.01, // ~1km at equator; adjust as needed
-        };
-
-        index.build_grid();
-        Ok(index)
+        Ok(RoadSegmentIndex {
+            rtree: RTree::bulk_load(segments),
+        })
     }
 
-    /// Build the spatial grid index for fast neighbor queries.
-    fn build_grid(&mut self) {
-        for (seg_idx, segment) in self.segments.iter().enumerate() {
-            for vertex in &segment.vertices {
-                let grid_x = (vertex.x / self.grid_size).floor() as i32;
-                let grid_y = (vertex.y / self.grid_size).floor() as i32;
-
-                self.grid
-                    .entry((grid_x, grid_y))
-                    .or_insert_with(Vec::new)
-                    .push(seg_idx);
-            }
-        }
-    }
-
-    /// Find road segments near the given coordinate within search radius.
-    pub fn find_nearby_segments(&self, coord: Coord<f64>, radius_m: f64) -> Vec<&RoadSegment> {
-        // Convert radius from meters to degrees (rough approximation)
-        let radius_deg = radius_m / 111_000.0;
-
-        let grid_radius = (radius_deg / self.grid_size).ceil() as i32 + 1;
-        let grid_x = (coord.x / self.grid_size).floor() as i32;
-        let grid_y = (coord.y / self.grid_size).floor() as i32;
-
-        let mut candidates = std::collections::HashSet::new();
-
-        for dx in -grid_radius..=grid_radius {
-            for dy in -grid_radius..=grid_radius {
-                if let Some(indices) = self.grid.get(&(grid_x + dx, grid_y + dy)) {
-                    for &idx in indices {
-                        candidates.insert(idx);
-                    }
-                }
-            }
-        }
-
-        candidates
-            .into_iter()
-            .map(|idx| &self.segments[idx])
-            .collect()
-    }
-
-    /// Find the single closest segment to a coordinate.
+    /// Find the single closest segment to a coordinate within the snap radius.
     pub fn find_closest_segment(
         &self,
         coord: Coord<f64>,
         radius_m: f64,
     ) -> Option<(&RoadSegment, f64)> {
-        let candidates = self.find_nearby_segments(coord, radius_m);
+        // A degree of longitude shrinks with latitude, so the search box is wider in degrees of longitude.
+        let radius_lat_deg = radius_m / METERS_PER_DEGREE_LAT;
+        let radius_lon_deg = radius_lat_deg / coord.y.to_radians().cos();
+        let search_box = AABB::from_corners(
+            [coord.x - radius_lon_deg, coord.y - radius_lat_deg],
+            [coord.x + radius_lon_deg, coord.y + radius_lat_deg],
+        );
 
-        candidates
-            .into_iter()
-            .map(|seg| {
-                let (_, dist, _) = seg.closest_point(coord);
-                (seg, dist)
-            })
-            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+        self.rtree
+            .locate_in_envelope_intersecting(search_box)
+            .map(|segment| (segment, segment.closest_point(coord).1))
+            .filter(|(_, distance)| *distance <= radius_m)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
     }
 
-    pub fn segments(&self) -> &[RoadSegment] {
-        &self.segments
+    pub fn is_empty(&self) -> bool {
+        self.rtree.size() == 0
     }
 }
 
 /// Find the closest point on a line segment to a target point.
-/// Returns (point, distance_in_meters, segment_parameter where segment_parameter=0 is point0, segment_parameter=1 is point1).
+/// Returns (point, distance_in_meters).
 fn closest_point_on_segment(
     point0: Coord<f64>,
     point1: Coord<f64>,
     target: Coord<f64>,
-) -> (Coord<f64>, f64, f64) {
-    let dx = point1.x - point0.x;
+) -> (Coord<f64>, f64) {
+    // Project in a locally-equirectangular space: scale longitude by cos(latitude)
+    // so that perpendicular projection is correct away from the equator.
+    let lon_scale = target.y.to_radians().cos();
+    let dx = (point1.x - point0.x) * lon_scale;
     let dy = point1.y - point0.y;
     let len_sq = dx * dx + dy * dy;
 
@@ -179,16 +152,16 @@ fn closest_point_on_segment(
                 Point::new(point0.x, point0.y),
                 Point::new(target.x, target.y),
             ),
-            0.0,
         );
     }
 
-    let segment_parameter = ((target.x - point0.x) * dx + (target.y - point0.y) * dy) / len_sq;
-    let segment_parameter_clamped = segment_parameter.max(0.0).min(1.0);
+    let segment_parameter =
+        ((target.x - point0.x) * lon_scale * dx + (target.y - point0.y) * dy) / len_sq;
+    let segment_parameter_clamped = segment_parameter.clamp(0.0, 1.0);
 
     let closest = Coord {
-        x: point0.x + segment_parameter_clamped * dx,
-        y: point0.y + segment_parameter_clamped * dy,
+        x: point0.x + segment_parameter_clamped * (point1.x - point0.x),
+        y: point0.y + segment_parameter_clamped * (point1.y - point0.y),
     };
 
     (
@@ -197,7 +170,6 @@ fn closest_point_on_segment(
             Point::new(closest.x, closest.y),
             Point::new(target.x, target.y),
         ),
-        segment_parameter_clamped,
     )
 }
 
@@ -211,10 +183,10 @@ mod tests {
         let point1 = Coord { x: 2.0, y: 0.0 };
         let target = Coord { x: 1.0, y: 1.0 };
 
-        let (closest, _, segment_parameter) = closest_point_on_segment(point0, point1, target);
+        let (closest, distance) = closest_point_on_segment(point0, point1, target);
         assert_eq!(closest.x, 1.0);
         assert_eq!(closest.y, 0.0);
-        assert_eq!(segment_parameter, 0.5);
+        assert_eq!(distance, 111195.0802335329);
     }
 
     #[test]
@@ -223,8 +195,8 @@ mod tests {
         let point1 = Coord { x: 1.0, y: 0.0 };
         let target = Coord { x: 2.0, y: 0.0 };
 
-        let (closest, _, segment_parameter) = closest_point_on_segment(point0, point1, target);
+        let (closest, distance) = closest_point_on_segment(point0, point1, target);
         assert_eq!(closest.x, 1.0);
-        assert_eq!(segment_parameter, 1.0);
+        assert_eq!(distance, 111195.0802335329);
     }
 }

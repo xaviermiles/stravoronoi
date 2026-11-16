@@ -22,8 +22,7 @@ pub fn snap_polyline(coords: &[Coord<f64>], index: &RoadSegmentIndex) -> Option<
         return None;
     }
 
-    if index.segments().is_empty() {
-        // Road segment index is empty.
+    if index.is_empty() {
         return None;
     }
 
@@ -35,7 +34,7 @@ pub fn snap_polyline(coords: &[Coord<f64>], index: &RoadSegmentIndex) -> Option<
     for coord in coords {
         match index.find_closest_segment(*coord, SNAP_RADIUS_M) {
             Some((segment, _distance)) => {
-                let (snapped_point, _, _) = segment.closest_point(*coord);
+                let (snapped_point, _) = segment.closest_point(*coord);
                 consecutive_outliers = 0;
 
                 if let Some(prev_way_id) = current_way_id {
