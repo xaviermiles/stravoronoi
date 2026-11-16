@@ -25,8 +25,18 @@ impl RTreeObject for RoadSegment {
     }
 }
 
+/// Result of projecting a coordinate onto a road segment.
+#[derive(Clone, Copy, Debug)]
+pub struct Projection {
+    pub point: Coord<f64>,
+    pub distance_m: f64,
+    /// Location along the segment: the index of the edge plus the fraction along that edge.
+    /// It increases monotonically from the first vertex (0.0) to the last (vertices.len() - 1).
+    pub position: f64,
+}
+
 impl RoadSegment {
-    fn new(way_id: i64, vertices: Vec<Coord<f64>>) -> Self {
+    pub fn new(way_id: i64, vertices: Vec<Coord<f64>>) -> Self {
         let points: Vec<[f64; 2]> = vertices.iter().map(|v| [v.x, v.y]).collect();
         let envelope = AABB::from_points(&points);
         RoadSegment {
@@ -37,24 +47,76 @@ impl RoadSegment {
     }
 
     /// Find the closest point on this segment to the given coordinate.
-    /// Returns (closest_point, distance_in_meters).
-    pub fn closest_point(&self, target: Coord<f64>) -> (Coord<f64>, f64) {
-        let mut min_dist = f64::INFINITY;
-        let mut closest_point = self.vertices[0];
+    pub fn closest_point(&self, target: Coord<f64>) -> Projection {
+        let mut closest = Projection {
+            point: self.vertices[0],
+            distance_m: f64::INFINITY,
+            position: 0.0,
+        };
 
-        for i in 0..self.vertices.len() - 1 {
-            let point0 = self.vertices[i];
-            let point1 = self.vertices[i + 1];
+        for (i, edge) in self.vertices.windows(2).enumerate() {
+            let (point, distance_m, edge_fraction) =
+                closest_point_on_segment(edge[0], edge[1], target);
 
-            let (point_on_segment, distance) = closest_point_on_segment(point0, point1, target);
-
-            if distance < min_dist {
-                min_dist = distance;
-                closest_point = point_on_segment;
+            if distance_m < closest.distance_m {
+                closest = Projection {
+                    point,
+                    distance_m,
+                    position: i as f64 + edge_fraction,
+                };
             }
         }
 
-        (closest_point, min_dist)
+        closest
+    }
+
+    /// Position of the last vertex of this segment.
+    pub fn end_position(&self) -> f64 {
+        (self.vertices.len() - 1) as f64
+    }
+
+    /// The coordinate at a position along this segment.
+    pub fn point_at(&self, position: f64) -> Coord<f64> {
+        let edge = (position.floor().max(0.0) as usize).min(self.vertices.len() - 2);
+        let edge_fraction = position - edge as f64;
+        let point0 = self.vertices[edge];
+        let point1 = self.vertices[edge + 1];
+
+        // Return exact vertices at the ends so shared nodes compare equal across segments.
+        if edge_fraction <= 0.0 {
+            point0
+        } else if edge_fraction >= 1.0 {
+            point1
+        } else {
+            Coord {
+                x: point0.x + edge_fraction * (point1.x - point0.x),
+                y: point0.y + edge_fraction * (point1.y - point0.y),
+            }
+        }
+    }
+
+    /// The part of this segment between two positions, including any vertices in between.
+    /// The result is ordered from `start` to `end`.
+    pub fn slice(&self, start: f64, end: f64) -> Vec<Coord<f64>> {
+        let (low, high) = if start <= end {
+            (start, end)
+        } else {
+            (end, start)
+        };
+
+        let mut points = vec![self.point_at(low)];
+        let first_interior_vertex = low.floor() as usize + 1;
+        let end_vertex_exclusive = high.ceil() as usize;
+        points.extend(
+            &self.vertices[first_interior_vertex..end_vertex_exclusive.max(first_interior_vertex)],
+        );
+        points.push(self.point_at(high));
+        points.dedup();
+
+        if start > end {
+            points.reverse();
+        }
+        points
     }
 }
 
@@ -100,9 +162,13 @@ impl RoadSegmentIndex {
             }
         }
 
-        Ok(RoadSegmentIndex {
+        Ok(Self::from_segments(segments))
+    }
+
+    pub fn from_segments(segments: Vec<RoadSegment>) -> Self {
+        RoadSegmentIndex {
             rtree: RTree::bulk_load(segments),
-        })
+        }
     }
 
     /// Find the single closest segment to a coordinate within the snap radius.
@@ -110,7 +176,7 @@ impl RoadSegmentIndex {
         &self,
         coord: Coord<f64>,
         radius_m: f64,
-    ) -> Option<(&RoadSegment, f64)> {
+    ) -> Option<(&RoadSegment, Projection)> {
         // A degree of longitude shrinks with latitude, so the search box is wider in degrees of longitude.
         let radius_lat_deg = radius_m / METERS_PER_DEGREE_LAT;
         let radius_lon_deg = radius_lat_deg / coord.y.to_radians().cos();
@@ -121,9 +187,9 @@ impl RoadSegmentIndex {
 
         self.rtree
             .locate_in_envelope_intersecting(search_box)
-            .map(|segment| (segment, segment.closest_point(coord).1))
-            .filter(|(_, distance)| *distance <= radius_m)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|segment| (segment, segment.closest_point(coord)))
+            .filter(|(_, projection)| projection.distance_m <= radius_m)
+            .min_by(|a, b| a.1.distance_m.total_cmp(&b.1.distance_m))
     }
 
     pub fn is_empty(&self) -> bool {
@@ -132,12 +198,12 @@ impl RoadSegmentIndex {
 }
 
 /// Find the closest point on a line segment to a target point.
-/// Returns (point, distance_in_meters).
+/// Returns (point, distance_in_meters, fraction along the line from point0 (0.0) to point1 (1.0)).
 fn closest_point_on_segment(
     point0: Coord<f64>,
     point1: Coord<f64>,
     target: Coord<f64>,
-) -> (Coord<f64>, f64) {
+) -> (Coord<f64>, f64, f64) {
     // Project in a locally-equirectangular space: scale longitude by cos(latitude)
     // so that perpendicular projection is correct away from the equator.
     let lon_scale = target.y.to_radians().cos();
@@ -152,6 +218,7 @@ fn closest_point_on_segment(
                 Point::new(point0.x, point0.y),
                 Point::new(target.x, target.y),
             ),
+            0.0,
         );
     }
 
@@ -170,6 +237,7 @@ fn closest_point_on_segment(
             Point::new(closest.x, closest.y),
             Point::new(target.x, target.y),
         ),
+        segment_parameter_clamped,
     )
 }
 
@@ -183,10 +251,11 @@ mod tests {
         let point1 = Coord { x: 2.0, y: 0.0 };
         let target = Coord { x: 1.0, y: 1.0 };
 
-        let (closest, distance) = closest_point_on_segment(point0, point1, target);
+        let (closest, distance, fraction) = closest_point_on_segment(point0, point1, target);
         assert_eq!(closest.x, 1.0);
         assert_eq!(closest.y, 0.0);
         assert_eq!(distance, 111195.0802335329);
+        assert_eq!(fraction, 0.5);
     }
 
     #[test]
@@ -195,8 +264,43 @@ mod tests {
         let point1 = Coord { x: 1.0, y: 0.0 };
         let target = Coord { x: 2.0, y: 0.0 };
 
-        let (closest, distance) = closest_point_on_segment(point0, point1, target);
+        let (closest, distance, fraction) = closest_point_on_segment(point0, point1, target);
         assert_eq!(closest.x, 1.0);
         assert_eq!(distance, 111195.0802335329);
+        assert_eq!(fraction, 1.0);
+    }
+
+    #[test]
+    fn test_slice_includes_interior_vertices() {
+        let segment = RoadSegment::new(
+            1,
+            vec![
+                Coord { x: 0.0, y: 0.0 },
+                Coord { x: 1.0, y: 0.0 },
+                Coord { x: 1.0, y: 1.0 },
+            ],
+        );
+
+        // From halfway along the first edge to halfway along the second edge.
+        let points = segment.slice(0.5, 1.5);
+        assert_eq!(
+            points,
+            vec![
+                Coord { x: 0.5, y: 0.0 },
+                Coord { x: 1.0, y: 0.0 },
+                Coord { x: 1.0, y: 0.5 },
+            ]
+        );
+
+        // Reversed positions give the reversed order.
+        let mut reversed = segment.slice(1.5, 0.5);
+        reversed.reverse();
+        assert_eq!(reversed, points);
+
+        // The full length reaches both end vertices.
+        let full = segment.slice(0.0, segment.end_position());
+        assert_eq!(full.first(), Some(&Coord { x: 0.0, y: 0.0 }));
+        assert_eq!(full.last(), Some(&Coord { x: 1.0, y: 1.0 }));
+        assert_eq!(full.len(), 3);
     }
 }
