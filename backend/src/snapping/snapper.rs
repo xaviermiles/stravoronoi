@@ -3,9 +3,7 @@ use super::segment_index::{RoadSegment, RoadSegmentIndex};
 use geo::{Distance, Haversine, LineString, MultiLineString};
 use geo_types::{Coord, Point};
 
-const SNAP_RADIUS_M: f64 = 30.0;
-/// Break the polyline only after this many consecutive out-of-range points.
-const MAX_CONSECUTIVE_OUTLIERS: usize = 5;
+const SNAP_RADIUS_M: f64 = 15.0;
 /// Maximum plausible distance between consecutive snapped points (meters).
 /// Gaps larger than this indicate a jump between disconnected road segments.
 const MAX_SNAP_DISTANCE_M: f64 = 100.0;
@@ -47,18 +45,12 @@ pub fn snap_polyline(coords: &[Coord<f64>], index: &RoadSegmentIndex) -> Option<
 
     let mut lines: Vec<LineString> = Vec::new();
     let mut current: Option<SegmentRun> = None;
-    let mut consecutive_outliers = 0;
 
     for coord in coords {
         let Some((segment, projection)) = index.find_closest_segment(*coord, SNAP_RADIUS_M) else {
-            consecutive_outliers += 1;
-
-            if consecutive_outliers >= MAX_CONSECUTIVE_OUTLIERS {
-                lines.extend(current.take().and_then(SegmentRun::into_line));
-            }
+            lines.extend(current.take().and_then(SegmentRun::into_line));
             continue;
         };
-        consecutive_outliers = 0;
 
         let continues_current_run = current.as_ref().is_some_and(|run| {
             run.segment.way_id == segment.way_id
