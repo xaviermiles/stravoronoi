@@ -26,10 +26,6 @@ use crate::{AppState, FillAthleteSet, models, services};
 const START_WAIT: Duration = Duration::from_millis(100);
 const MAX_WAIT: Duration = Duration::from_secs(2);
 
-// If true, this endpoint will return snapped runs (to be mapped) instead of the original strava polylines.
-// This is useful for debugging.
-const SHOW_SNAPPED_RUNS: bool = false;
-
 /// Removes an athlete from the in-flight fill athlete set when dropped.
 ///
 /// Holding this in the spawned *fill task guarantees the athlete is cleared
@@ -425,7 +421,7 @@ pub async fn get_runs(
             let runs_response: Vec<_> = runs
                 .into_iter()
                 .filter_map(|(run, snapped_run)| {
-                    let summary_map = if SHOW_SNAPPED_RUNS {
+                    let summary_map = if state.show_snapped_runs {
                         snapped_run.and_then(|snapped| snapped.polyline)
                     } else {
                         run.summary_map

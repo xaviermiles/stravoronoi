@@ -61,9 +61,13 @@ struct AppState {
     /// Spatial index of road segments for snapping runs.
     /// Only populated after the road grid is seeded.
     snapping_index: Arc<tokio::sync::RwLock<Option<snapping::RoadSegmentIndex>>>,
+    /// If true, the "runs" endpoint will return snapped runs instead of the original polylines.
+    ///
+    /// This is useful for debugging.
+    show_snapped_runs: bool,
 }
 
-async fn init_app_state(clean_database: bool) -> Result<AppState, DbErr> {
+async fn init_app_state(clean_database: bool, show_snapped_runs: bool) -> Result<AppState, DbErr> {
     if clean_database {
         models::clean_database();
     }
@@ -74,6 +78,7 @@ async fn init_app_state(clean_database: bool) -> Result<AppState, DbErr> {
         forwardfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
         snap_notify: Arc::new(Notify::new()),
         snapping_index: Arc::new(tokio::sync::RwLock::new(None)),
+        show_snapped_runs,
     };
     road_grid::start_seed(&state);
     snapping::start(&state);
@@ -82,8 +87,12 @@ async fn init_app_state(clean_database: bool) -> Result<AppState, DbErr> {
 
 #[derive(Parser)]
 struct Args {
-    #[arg(short, long)]
+    /// Clean the database before starting.
+    #[arg(long)]
     clean: bool,
+    /// Return snapped polylines from the "runs" endpoint.
+    #[arg(long)]
+    show_snapped_runs: bool,
 }
 
 #[tokio::main]
@@ -94,7 +103,7 @@ async fn main() -> Result<(), DbErr> {
         .init();
 
     let args = Args::parse();
-    let state = init_app_state(args.clean).await?;
+    let state = init_app_state(args.clean, args.show_snapped_runs).await?;
 
     let frontend_base_url = Url::parse(FRONTEND_URL)
         .expect("Defined statically")
