@@ -5,10 +5,11 @@ use axum::{
 };
 use clap::Parser;
 use sea_orm::DatabaseConnection;
+use sea_orm::DbErr;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 use tokio::sync::Notify;
 use tower_http::cors::CorsLayer;
@@ -57,57 +58,52 @@ struct AppState {
     forwardfilling_athletes: FillAthleteSet,
     /// Channel for notifying that there is new runs to be snapped.
     snap_notify: Arc<Notify>,
+    /// Spatial index of road segments for snapping runs.
+    /// Only populated after the road grid is seeded.
+    snapping_index: Arc<tokio::sync::RwLock<Option<snapping::RoadSegmentIndex>>>,
+    /// If true, the "runs" endpoint will return snapped runs instead of the original polylines.
+    ///
+    /// This is useful for debugging.
+    show_snapped_runs: bool,
 }
 
-async fn init_app_state(clean_database: bool) -> AppState {
+async fn init_app_state(clean_database: bool, show_snapped_runs: bool) -> Result<AppState, DbErr> {
     if clean_database {
         models::clean_database();
     }
-    let database = models::connect_database()
-        .await
-        .expect("need a database connection");
-    let is_grid_ready = Arc::new(AtomicBool::new(false));
-    // let snap_notify = Arc::new(Notify::new());
     let state = AppState {
-        database,
-        is_grid_ready: is_grid_ready.clone(),
+        database: models::connect_database().await?,
+        is_grid_ready: Arc::new(AtomicBool::new(false)),
         backfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
         forwardfilling_athletes: Arc::new(Mutex::new(HashSet::new())),
         snap_notify: Arc::new(Notify::new()),
+        snapping_index: Arc::new(tokio::sync::RwLock::new(None)),
+        show_snapped_runs,
     };
-
-    // Seed the road grid without blocking.
-    let seed_database = state.database.clone();
-    tokio::spawn(async move {
-        match road_grid::seed(&seed_database).await {
-            Ok(()) => is_grid_ready.store(true, Ordering::Release),
-            Err(err) => tracing::error!("Failed to seed road grid: {err}"),
-        }
-    });
-
-    // TODO: add notifications when more runs are inserted in the database.
-    snapping::start(state.database.clone(), state.snap_notify.clone());
-    // Process runs already in the database.
-    state.snap_notify.clone().notify_one();
-
-    state
+    road_grid::start_seed(&state);
+    snapping::start(&state);
+    Ok(state)
 }
 
 #[derive(Parser)]
 struct Args {
-    #[arg(short, long)]
+    /// Clean the database before starting.
+    #[arg(long)]
     clean: bool,
+    /// Return snapped polylines from the "runs" endpoint.
+    #[arg(long)]
+    show_snapped_runs: bool,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), DbErr> {
     tracing_subscriber::registry()
         .with(tracing_subscriber::filter::LevelFilter::INFO)
         .with(tracing_subscriber::fmt::layer())
         .init();
 
     let args = Args::parse();
-    let state = init_app_state(args.clean).await;
+    let state = init_app_state(args.clean, args.show_snapped_runs).await?;
 
     let frontend_base_url = Url::parse(FRONTEND_URL)
         .expect("Defined statically")
@@ -139,4 +135,5 @@ async fn main() {
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
+    Ok(())
 }

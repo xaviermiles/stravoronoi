@@ -18,6 +18,7 @@ nanoid = "0.5"
 oauth2 = "5.0.0"
 polyline = "0.11.0"
 reqwest = { version = "0.13.4", features = ["form", "json"] }
+rstar = "0.14.0"
 sea-orm = {
     version = "2.0.0-rc.41",
     default-features = false,

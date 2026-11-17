@@ -1,3 +1,4 @@
+use crate::AppState;
 use crate::models;
 use geo::MultiLineString;
 use geojson::Feature;
@@ -6,13 +7,12 @@ use geojson::Value;
 use sea_orm::QueryOrder;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter};
 use std::sync::Arc;
-use tokio::sync::Notify;
-use tokio::time;
 
 use crate::models::{run, snapped_run};
 use sea_orm::ActiveValue::Set;
 
-use crate::services::mapbox::{MatchError, map_match};
+use super::segment_index::RoadSegmentIndex;
+use super::snapper;
 
 /// Strava encoded polylines use a precision of 5 decimal places.
 const POLYLINE_PRECISION: u32 = 5;
@@ -56,41 +56,44 @@ async fn insert_snapped_run(
     }
 }
 
-/// Snap a Strava encoded polyline using map matching.
+/// Snap a Strava encoded polyline to the road grid.
 ///
 /// Returns an error if the run could not be processed, but should be attempted again.
-async fn process_run(database: &DatabaseConnection, run: models::run::Model) -> Result<(), String> {
+async fn process_run(
+    database: &DatabaseConnection,
+    run: models::run::Model,
+    index: &Arc<tokio::sync::RwLock<Option<RoadSegmentIndex>>>,
+) -> Result<(), String> {
     let Some(summary_map) = run.summary_map else {
         return insert_snapped_run(database, run.strava_activity_id, None).await;
     };
     let raw_coords = polyline::decode_polyline(&summary_map, POLYLINE_PRECISION)
-        .map_err(|err| format!("Failed to decoded polyline {err}"))?
+        .map_err(|err| format!("Failed to decode polyline: {err}"))?
         .into_inner();
 
-    match map_match(&raw_coords).await {
-        Ok(polyline) => insert_snapped_run(database, run.strava_activity_id, Some(polyline)).await,
-        Err(MatchError::Permanent(err)) => {
-            tracing::error!("Permanent error map matching: {err}");
-            insert_snapped_run(database, run.strava_activity_id, None).await
-        }
-        Err(MatchError::Transient(err)) => return Err(format!("Transient: {err}")),
-        Err(MatchError::Backoff(backoff_time)) => {
-            time::sleep(backoff_time).await;
-            Err(format!("Backed off for {backoff_time:?}"))
-        }
-    }
+    let index_guard = index.read().await;
+    let Some(index) = index_guard.as_ref() else {
+        // This will need to be processed again, but is a normal state so don't need to log an error.
+        return Ok(());
+    };
+
+    let snapped_polyline = snapper::snap_polyline(&raw_coords, &index);
+    insert_snapped_run(database, run.strava_activity_id, snapped_polyline).await
 }
 
 /// Spawn a worker to snap runs.
-pub fn start(database: DatabaseConnection, notify: Arc<Notify>) {
+pub fn start(state: &AppState) {
+    let database = state.database.clone();
+    let snapping_index = state.snapping_index.clone();
+    let snap_notify = state.snap_notify.clone();
     tokio::spawn(async move {
         loop {
             while let Some(run) = get_next_unsnapped_run(&database).await {
-                if let Err(err) = process_run(&database, run).await {
+                if let Err(err) = process_run(&database, run, &snapping_index).await {
                     tracing::error!("Error processing run: {err}");
                 };
             }
-            notify.notified().await;
+            snap_notify.notified().await;
         }
     });
 }
